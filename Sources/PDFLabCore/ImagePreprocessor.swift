@@ -11,14 +11,18 @@ public enum ImagePreprocessor {
             kCIInputSaturationKey: 0,
             kCIInputContrastKey: 1.25
         ])
+        let denoised = colorControlled.applyingFilter("CINoiseReduction", parameters: [
+            "inputNoiseLevel": 0.02,
+            "inputSharpness": 0.40
+        ])
 
         let output: CIImage
         if let documentEnhanced = CIFilter(name: "CIDocumentEnhancer", parameters: [
-            kCIInputImageKey: colorControlled
+            kCIInputImageKey: denoised
         ])?.outputImage {
             output = documentEnhanced
         } else {
-            output = colorControlled
+            output = denoised
         }
 
         let extent = CGRect(x: 0, y: 0, width: image.width, height: image.height)
