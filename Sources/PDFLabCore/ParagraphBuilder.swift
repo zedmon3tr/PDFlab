@@ -32,7 +32,8 @@ public enum ParagraphBuilder {
         for l in lines {
             guard var c = current, c.page == l.pageIndex else { flush(); current = (l.text, l.pageIndex, l.confidence.map { [$0] } ?? [], l.bbox); continue }
             let gap = c.lastBox.minY - l.bbox.maxY          // 归一化坐标,原点左下,行自上而下
-            let sameParagraph = gap <= l.bbox.height * 0.6  // 间距 ≤ 0.6 倍行高(即行距 ≤ 1.6 倍行高)
+            let overlaps = max(c.lastBox.minX, l.bbox.minX) < min(c.lastBox.maxX, l.bbox.maxX)  // 水平重叠(多栏不并段)
+            let sameParagraph = gap <= l.bbox.height * 0.6 && overlaps  // 间距 ≤ 0.6 倍行高(即行距 ≤ 1.6 倍行高)且水平重叠
             if sameParagraph {
                 c.text = join(c.text, l.text)
                 if let cf = l.confidence { c.confs.append(cf) }
