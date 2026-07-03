@@ -1,6 +1,6 @@
+import Foundation
 import SwiftUI
 import Translation
-import _Translation_SwiftUI
 import PDFLabCore
 
 @MainActor
@@ -11,7 +11,7 @@ public final class AppleTranslationHost: ObservableObject, AppleSessionRunner, @
 
     private var pendingRequest: PendingRequest?
 
-    public init() {}
+    private init() {}
 
     public var view: some View {
         Mount(host: self)
@@ -19,25 +19,46 @@ public final class AppleTranslationHost: ObservableObject, AppleSessionRunner, @
 
     nonisolated public func run(texts: [String], direction: TranslationDirection) async throws -> [String] {
         guard !texts.isEmpty else { return [] }
+        let id = UUID()
+        let cancellation = CancellationFlag()
 
-        return try await withCheckedThrowingContinuation { continuation in
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                Task { @MainActor in
+                    self.enqueue(
+                        id: id,
+                        texts: texts,
+                        direction: direction,
+                        continuation: continuation,
+                        cancellation: cancellation
+                    )
+                }
+            }
+        } onCancel: {
+            cancellation.cancel()
             Task { @MainActor in
-                self.enqueue(texts: texts, direction: direction, continuation: continuation)
+                self.cancelRequest(id: id)
             }
         }
     }
 
     private func enqueue(
+        id: UUID,
         texts: [String],
         direction: TranslationDirection,
-        continuation: CheckedContinuation<[String], any Error>
+        continuation: CheckedContinuation<[String], any Error>,
+        cancellation: CancellationFlag
     ) {
+        guard !cancellation.isCancelled else {
+            continuation.resume(throwing: PDFLabError.cancelled)
+            return
+        }
         guard pendingRequest == nil else {
             continuation.resume(throwing: PDFLabError.engineUnavailable(engineID: "apple"))
             return
         }
 
-        pendingRequest = PendingRequest(texts: texts, continuation: continuation)
+        pendingRequest = PendingRequest(id: id, state: .pending, texts: texts, continuation: continuation)
         pendingConfig = TranslationSession.Configuration(
             source: AppleLocalEngine.sourceLanguage(for: direction),
             target: AppleLocalEngine.targetLanguage(for: direction)
@@ -45,17 +66,36 @@ public final class AppleTranslationHost: ObservableObject, AppleSessionRunner, @
     }
 
     fileprivate func runPendingRequest(with session: TranslationSession) async {
-        guard let request = pendingRequest else { return }
+        guard let request = pendingRequest, request.state == .pending else { return }
+
+        pendingRequest?.state = .inFlight
+        let id = request.id
+        let texts = request.texts
 
         do {
-            let results = try await translate(request.texts, with: session)
-            request.continuation.resume(returning: results)
+            let results = try await translate(texts, with: session)
+            finishRequest(id: id, returning: results)
         } catch {
-            request.continuation.resume(throwing: mapAppleTranslationError(error))
+            finishRequest(id: id, throwing: mapAppleTranslationError(error))
         }
+    }
 
+    private func cancelRequest(id: UUID) {
+        finishRequest(id: id, throwing: PDFLabError.cancelled)
+    }
+
+    private func finishRequest(id: UUID, returning results: [String]) {
+        guard let request = pendingRequest, request.id == id else { return }
         pendingRequest = nil
         pendingConfig = nil
+        request.continuation.resume(returning: results)
+    }
+
+    private func finishRequest(id: UUID, throwing error: Error) {
+        guard let request = pendingRequest, request.id == id else { return }
+        pendingRequest = nil
+        pendingConfig = nil
+        request.continuation.resume(throwing: error)
     }
 
     private func translate(_ texts: [String], with session: TranslationSession) async throws -> [String] {
@@ -98,7 +138,31 @@ public final class AppleTranslationHost: ObservableObject, AppleSessionRunner, @
     }
 
     private struct PendingRequest {
+        let id: UUID
+        var state: RequestState
         let texts: [String]
         let continuation: CheckedContinuation<[String], any Error>
+    }
+
+    private enum RequestState {
+        case pending
+        case inFlight
+    }
+}
+
+private final class CancellationFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
     }
 }
