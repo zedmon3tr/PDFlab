@@ -1,6 +1,7 @@
 import Foundation
 public enum TextChunker {
     public static func split(_ text: String, limit: Int) -> [String] {
+        guard limit > 0 else { return [text] }
         guard text.count > limit else { return [text] }
         var sentences: [String] = []
         var cur = ""
