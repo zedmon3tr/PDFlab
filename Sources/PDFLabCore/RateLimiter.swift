@@ -1,4 +1,4 @@
-@_exported import Foundation
+import Foundation
 public actor RateLimiter {
     private let minInterval: TimeInterval
     private var lastFire: Date = .distantPast

@@ -1,3 +1,9 @@
+// CLT 工具链缺少 _Testing_Foundation 跨导入 overlay:测试文件里同时 import Testing 和
+// import Foundation 会编译失败(no such module '_Testing_Foundation')。
+// 因此由 PDFLabCore 在此统一 @_exported 重导出 Foundation;
+// 测试文件一律不要直接 import Foundation,经 @testable import PDFLabCore 传递获得。
+@_exported import Foundation
+
 public enum PDFLabCoreInfo { public static let version = "0.1.0" }
 
 /// 一段源文本。pageIndex 从 0 计,是段落起始页(跨页段落归起始页)。
