@@ -36,7 +36,6 @@ public struct OCRService: Sendable {
 
         let observations = try await request.perform(on: image)
         var lines: [TextLine] = []
-        var confidenceSum = 0.0
 
         for observation in observations {
             for paragraph in observation.document.paragraphs {
@@ -50,11 +49,10 @@ public struct OCRService: Sendable {
                     bbox: paragraph.boundingRegion.boundingBox.cgRect,
                     confidence: confidence
                 ))
-                confidenceSum += confidence
             }
         }
 
-        return (lines, lines.isEmpty ? 0 : confidenceSum / Double(lines.count))
+        return normalizedResult(lines)
     }
 
     @available(macOS 26.0, *)
@@ -74,7 +72,6 @@ public struct OCRService: Sendable {
 
         let observations = try await request.perform(on: image)
         var lines: [TextLine] = []
-        var confidenceSum = 0.0
 
         for observation in observations {
             guard let candidate = observation.topCandidates(1).first else { continue }
@@ -85,9 +82,50 @@ public struct OCRService: Sendable {
                 bbox: observation.boundingBox.cgRect,
                 confidence: confidence
             ))
-            confidenceSum += confidence
         }
 
-        return (lines, lines.isEmpty ? 0 : confidenceSum / Double(lines.count))
+        return normalizedResult(lines)
+    }
+
+    private func normalizedResult(_ lines: [TextLine]) -> (lines: [TextLine], confidence: Double) {
+        let normalized = Self.normalizeReadingOrder(lines)
+        let confidences = normalized.compactMap(\.confidence)
+        return (normalized, confidences.isEmpty ? 0 : confidences.reduce(0, +) / Double(confidences.count))
+    }
+
+    static func normalizeReadingOrder(_ lines: [TextLine]) -> [TextLine] {
+        lines.compactMap { line in
+            let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            return TextLine(
+                text: text,
+                pageIndex: line.pageIndex,
+                bbox: line.bbox,
+                confidence: line.confidence
+            )
+        }
+        .sorted { lhs, rhs in
+            let lhsMidY = lhs.bbox.midY
+            let rhsMidY = rhs.bbox.midY
+            let sameBandTolerance = max(lhs.bbox.height, rhs.bbox.height) * 0.5
+
+            if abs(lhsMidY - rhsMidY) <= sameBandTolerance {
+                if lhs.bbox.minX != rhs.bbox.minX {
+                    return lhs.bbox.minX < rhs.bbox.minX
+                }
+                return lhs.text < rhs.text
+            }
+
+            if lhs.bbox.maxY != rhs.bbox.maxY {
+                return lhs.bbox.maxY > rhs.bbox.maxY
+            }
+            if lhs.bbox.minY != rhs.bbox.minY {
+                return lhs.bbox.minY > rhs.bbox.minY
+            }
+            if lhs.bbox.minX != rhs.bbox.minX {
+                return lhs.bbox.minX < rhs.bbox.minX
+            }
+            return lhs.text < rhs.text
+        }
     }
 }
