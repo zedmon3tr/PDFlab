@@ -2,6 +2,7 @@ import CoreGraphics
 import PDFKit
 
 public enum PageRasterizer {
+    private static let defaultDPI: CGFloat = 350
     private static let minDPI: CGFloat = 300
     private static let maxDPI: CGFloat = 400
     private static let maxPixels = 6000
@@ -13,7 +14,8 @@ public enum PageRasterizer {
             return nil
         }
 
-        let clampedDPI = min(max(targetDPI, minDPI), maxDPI)
+        let normalizedDPI = targetDPI.isFinite ? targetDPI : defaultDPI
+        let clampedDPI = min(max(normalizedDPI, minDPI), maxDPI)
         let dpiScale = clampedDPI / 72
         let rawWidth = bounds.width * dpiScale
         let rawHeight = bounds.height * dpiScale
@@ -40,7 +42,6 @@ public enum PageRasterizer {
 
         context.saveGState()
         context.scaleBy(x: renderScale, y: renderScale)
-        context.translateBy(x: -bounds.origin.x, y: -bounds.origin.y)
         page.draw(with: .mediaBox, to: context)
         context.restoreGState()
 
