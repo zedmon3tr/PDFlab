@@ -46,7 +46,9 @@ public struct OpenAICompatEngine: TranslationEngine {
         let targetLanguage = direction == .enToZh ? "Chinese" : "English"
         let systemPrompt = "You are a professional translator. Translate the user's text to \(targetLanguage). Output ONLY the translation, no explanations."
 
-        var request = URLRequest(url: URL(string: "\(config.baseURL)/chat/completions")!)
+        // 用户可能从文档复制带尾斜杠的 baseURL(如 .../v1/),裸拼接会产生双斜杠导致多数服务 404。
+        let base = config.baseURL.hasSuffix("/") ? String(config.baseURL.dropLast()) : config.baseURL
+        var request = URLRequest(url: URL(string: "\(base)/chat/completions")!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
