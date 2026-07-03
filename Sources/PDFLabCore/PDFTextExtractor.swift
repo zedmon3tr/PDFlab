@@ -36,27 +36,58 @@ public enum PDFTextExtractor {
         }
 
         let pageBounds = page.bounds(for: .mediaBox)
+        let textLines = content.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
         var lines: [TextLine] = []
-        for raw in content.components(separatedBy: .newlines) {
-            let text = raw.trimmingCharacters(in: .whitespaces)
-            guard !text.isEmpty else {
-                continue
-            }
+        var consumedOccurrences: [String: Int] = [:]
+        for (lineIndex, text) in textLines.enumerated() {
+            let occurrence = consumedOccurrences[text, default: 0]
+            consumedOccurrences[text] = occurrence + 1
 
-            let lineIndex = lines.count
-            var bbox = CGRect(x: 0.1, y: 0.9 - CGFloat(lineIndex) * 0.035, width: 0.8, height: 0.03)
-            if let selection = doc.findString(text, withOptions: .literal).first(where: { $0.pages.first == page }) {
+            var bbox = fallbackBBox(lineIndex: lineIndex, lineCount: textLines.count)
+            if let selection = selection(for: text, on: page, in: doc, occurrence: occurrence) {
                 let rect = selection.bounds(for: page)
-                bbox = CGRect(
-                    x: rect.minX / pageBounds.width,
-                    y: rect.minY / pageBounds.height,
-                    width: rect.width / pageBounds.width,
-                    height: rect.height / pageBounds.height
-                )
+                bbox = normalizedBBox(from: rect, pageBounds: pageBounds, fallback: bbox)
             }
             lines.append(TextLine(text: text, pageIndex: pageIndex, bbox: bbox, confidence: nil))
         }
 
         return PageExtraction(pageIndex: pageIndex, lines: lines, isScanned: lines.isEmpty)
+    }
+
+    static func fallbackBBox(lineIndex: Int, lineCount: Int) -> CGRect {
+        let safeCount = max(lineCount, 1)
+        let height = min(0.03, 0.8 / CGFloat(safeCount))
+        let available = max(0, 1 - height)
+        let y: CGFloat
+        if safeCount == 1 {
+            y = 0.5
+        } else {
+            y = available * (1 - CGFloat(lineIndex) / CGFloat(safeCount - 1))
+        }
+        return CGRect(x: 0.1, y: clamp(y, min: 0, max: 1 - height), width: 0.8, height: height)
+    }
+
+    private static func selection(for text: String, on page: PDFPage, in doc: PDFDocument, occurrence: Int) -> PDFSelection? {
+        doc.findString(text, withOptions: .literal)
+            .filter { $0.pages.first == page }
+            .dropFirst(occurrence)
+            .first
+    }
+
+    private static func normalizedBBox(from rect: CGRect, pageBounds: CGRect, fallback: CGRect) -> CGRect {
+        guard pageBounds.width > 0, pageBounds.height > 0 else {
+            return fallback
+        }
+        let minX = clamp(rect.minX / pageBounds.width, min: 0, max: 1)
+        let minY = clamp(rect.minY / pageBounds.height, min: 0, max: 1)
+        let maxX = clamp(rect.maxX / pageBounds.width, min: minX, max: 1)
+        let maxY = clamp(rect.maxY / pageBounds.height, min: minY, max: 1)
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    private static func clamp<T: Comparable>(_ value: T, min minValue: T, max maxValue: T) -> T {
+        min(max(value, minValue), maxValue)
     }
 }
