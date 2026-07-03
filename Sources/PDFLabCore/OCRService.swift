@@ -58,6 +58,7 @@ public struct OCRService: Sendable {
     @available(macOS 26.0, *)
     private func paragraphConfidence(_ paragraph: DocumentObservation.Container.Text) -> Double {
         guard !paragraph.lines.isEmpty else {
+            // 0.9 is a fallback only when a paragraph reports no per-line confidence; real averaged confidence keeps the <0.5 retry rule meaningful.
             return 0.9
         }
         let sum = paragraph.lines.reduce(0.0) { $0 + Double($1.confidence) }
@@ -94,38 +95,33 @@ public struct OCRService: Sendable {
     }
 
     static func normalizeReadingOrder(_ lines: [TextLine]) -> [TextLine] {
-        lines.compactMap { line in
+        let cleaned: [TextLine] = lines.compactMap { line in
             let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return nil }
-            return TextLine(
-                text: text,
-                pageIndex: line.pageIndex,
-                bbox: line.bbox,
-                confidence: line.confidence
-            )
+            return TextLine(text: text, pageIndex: line.pageIndex, bbox: line.bbox, confidence: line.confidence)
         }
-        .sorted { lhs, rhs in
-            let lhsMidY = lhs.bbox.midY
-            let rhsMidY = rhs.bbox.midY
-            let sameBandTolerance = max(lhs.bbox.height, rhs.bbox.height) * 0.5
-
-            if abs(lhsMidY - rhsMidY) <= sameBandTolerance {
-                if lhs.bbox.minX != rhs.bbox.minX {
-                    return lhs.bbox.minX < rhs.bbox.minX
-                }
-                return lhs.text < rhs.text
+        // Pass 1: total order, top-to-bottom (strict weak: doubles + deterministic tiebreaks)
+        let byY = cleaned.sorted { a, b in
+            if a.bbox.midY != b.bbox.midY { return a.bbox.midY > b.bbox.midY }
+            if a.bbox.minX != b.bbox.minX { return a.bbox.minX < b.bbox.minX }
+            return a.text < b.text
+        }
+        // Pass 2: greedy banding against each band's anchor (first line)
+        var bands: [[TextLine]] = []
+        for line in byY {
+            if let anchor = bands.last?.first,
+               abs(anchor.bbox.midY - line.bbox.midY) <= max(anchor.bbox.height, line.bbox.height) * 0.5 {
+                bands[bands.count - 1].append(line)
+            } else {
+                bands.append([line])
             }
-
-            if lhs.bbox.maxY != rhs.bbox.maxY {
-                return lhs.bbox.maxY > rhs.bbox.maxY
+        }
+        // Pass 3: reading order within each band is left-to-right
+        return bands.flatMap { band in
+            band.sorted { a, b in
+                if a.bbox.minX != b.bbox.minX { return a.bbox.minX < b.bbox.minX }
+                return a.text < b.text
             }
-            if lhs.bbox.minY != rhs.bbox.minY {
-                return lhs.bbox.minY > rhs.bbox.minY
-            }
-            if lhs.bbox.minX != rhs.bbox.minX {
-                return lhs.bbox.minX < rhs.bbox.minX
-            }
-            return lhs.text < rhs.text
         }
     }
 }
