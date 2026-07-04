@@ -73,10 +73,17 @@ public struct DocxExporter: Exporter {
 
     private static func renderDocumentXML(_ doc: ComposedDocument) -> String {
         var body = ""
+        var lastBreakIndex = 0
         for block in doc.blocks {
             switch block {
-            case .pageBreak:
-                body += "<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>"
+            case .pageBreak(let pageIndex):
+                // 按 pageIndex 差值补分页符:空白源页保留为空白输出页,
+                // 且 break(0) 不再在文档开头多插一页(内容本就从第 1 页开始)。
+                let breaks = max(pageIndex - lastBreakIndex, 0)
+                lastBreakIndex = max(pageIndex, lastBreakIndex)
+                for _ in 0..<breaks {
+                    body += "<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>"
+                }
             case .sourceText(let text):
                 body += paragraphXML(for: text)
             case .translatedText(let text):

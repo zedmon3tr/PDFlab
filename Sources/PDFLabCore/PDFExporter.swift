@@ -2,7 +2,7 @@ import CoreText
 import CoreGraphics
 
 /// 将 ComposedDocument 渲染为 PDF:A4 页面,CoreText 逐块排版,列满自动换页,
-/// 遇 .pageBreak 且当前页非空时强制开新页(按页对应模式)。
+/// 遇 .pageBreak 按页号差值换页,空白源页保留为空白输出页(按页对应模式)。
 public struct PDFExporter: Exporter {
     private let pageWidth: CGFloat = 595
     private let pageHeight: CGFloat = 842
@@ -24,13 +24,23 @@ public struct PDFExporter: Exporter {
 
         let state = PageState(context: context, contentTop: contentTop)
         state.beginPage()
+        var lastBreakIndex = 0
 
         for block in doc.blocks {
             switch block {
-            case .pageBreak:
-                if !state.pageIsEmpty {
-                    state.endPage()
-                    state.beginPage()
+            case .pageBreak(let pageIndex):
+                // 按页对应:按 pageIndex 差值换页,空白源页成为真实空白输出页,
+                // 保持绝对页位(需求 3.6 页对页精确同步)。
+                var newPages = pageIndex - lastBreakIndex
+                if newPages <= 0, !state.pageIsEmpty {
+                    newPages = 1
+                }
+                lastBreakIndex = max(pageIndex, lastBreakIndex)
+                if newPages > 0 {
+                    for _ in 0..<newPages {
+                        state.endPage()
+                        state.beginPage()
+                    }
                 }
             case .sourceText(let text):
                 drawBlock(
