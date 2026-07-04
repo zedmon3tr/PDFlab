@@ -20,7 +20,7 @@ struct MainView: View {
     @EnvironmentObject private var app: AppState
 
     @State private var path: [Destination] = []
-    @State private var entries: [HistoryEntry] = []
+    @State private var historyState = MainHistoryState()
     @State private var pendingModule: PendingModule?
     @State private var showFileImporter = false
     @State private var missingEntry: HistoryEntry?
@@ -37,9 +37,13 @@ struct MainView: View {
             .navigationDestination(for: Destination.self) { destination in
                 switch destination {
                 case .viewer(let url):
-                    ViewerView(url: url)
+                    ViewerView(url: url) { openedURL in
+                        historyState.viewerDidOpen(openedURL, history: app.history)
+                    }
                 case .viewerPair(let sourceURL, let outputURL):
-                    ViewerView(url: sourceURL, secondaryURL: outputURL)
+                    ViewerView(url: sourceURL, secondaryURL: outputURL) { openedURL in
+                        historyState.viewerDidOpen(openedURL, history: app.history)
+                    }
                 case .translate(let url):
                     TranslateFlowView(url: url) { sourceURL, outputURL in
                         app.history.record(url: sourceURL)
@@ -123,6 +127,7 @@ struct MainView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(20)
             .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+            .hoverHighlight()
         }
         .buttonStyle(.plain)
     }
@@ -135,13 +140,13 @@ struct MainView: View {
                 .font(.headline)
                 .foregroundStyle(.secondary)
 
-            if entries.isEmpty {
+            if historyState.entries.isEmpty {
                 Text(L10n.t("history.empty"))
                     .font(.callout)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
             } else {
-                List(entries, id: \.path) { entry in
+                List(historyState.entries, id: \.path) { entry in
                     historyRow(entry)
                 }
                 .listStyle(.inset)
@@ -169,6 +174,8 @@ struct MainView: View {
                 .foregroundStyle(.secondary)
         }
         .contentShape(Rectangle())
+        .padding(.vertical, 4)
+        .hoverHighlight()
         .onTapGesture { openHistoryEntry(entry) }
         .contextMenu {
             Button(L10n.t("history.remove"), role: .destructive) {
@@ -181,7 +188,7 @@ struct MainView: View {
     // MARK: - 行为
 
     private func reloadHistory() {
-        entries = app.history.entries()
+        historyState.reload(history: app.history)
     }
 
     private func open(url: URL) {

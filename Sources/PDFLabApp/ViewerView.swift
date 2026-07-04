@@ -5,17 +5,12 @@ import PDFLabCore
 
 struct ViewerView: View {
     static var openableContentTypes: [UTType] {
-        var types: [UTType] = [.pdf, .plainText, .text]
-        for ext in ["md", "markdown", "docx"] {
-            if let type = UTType(filenameExtension: ext) {
-                types.append(type)
-            }
-        }
-        return types
+        ViewerSecondaryDocumentPicker.allowedContentTypes
     }
 
     let url: URL
     let secondaryURL: URL?
+    let onDocumentOpened: (URL) -> Void
 
     @EnvironmentObject private var app: AppState
 
@@ -24,15 +19,15 @@ struct ViewerView: View {
     @State private var secondary: ViewerDocument?
     @State private var ratioA = 1.0
     @State private var ratioB = 1.0
-    @State private var showTranslationImporter = false
     @State private var alert: ViewerAlert?
     @State private var passwordRequest: PasswordRequest?
     @State private var passwordInput = ""
     @State private var passwordFailure: String?
 
-    init(url: URL, secondaryURL: URL? = nil) {
+    init(url: URL, secondaryURL: URL? = nil, onDocumentOpened: @escaping (URL) -> Void = { _ in }) {
         self.url = url
         self.secondaryURL = secondaryURL
+        self.onDocumentOpened = onDocumentOpened
     }
 
     var body: some View {
@@ -41,10 +36,12 @@ struct ViewerView: View {
             .toolbar {
                 ToolbarItemGroup {
                     Button {
-                        showTranslationImporter = true
+                        openSecondaryDocument()
                     } label: {
                         Label(L10n.t("viewer.addTranslation"), systemImage: "plus")
                     }
+                    .buttonStyle(HoverButtonStyle(variant: .toolbar))
+                    .help(L10n.t("viewer.addTranslation"))
 
                     if secondary != nil {
                         ratioStepper(L10n.t("viewer.leftRatio"), value: $ratioA)
@@ -53,19 +50,6 @@ struct ViewerView: View {
                 }
             }
             .onAppear(perform: loadInitialDocuments)
-            .fileImporter(
-                isPresented: $showTranslationImporter,
-                allowedContentTypes: Self.openableContentTypes,
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    guard let picked = urls.first else { return }
-                    load(picked, side: .secondary)
-                case .failure(let error):
-                    alert = ViewerAlert(title: L10n.t("viewer.openFailed"), message: error.localizedDescription)
-                }
-            }
             .alert(item: $alert) { item in
                 Alert(
                     title: Text(item.title),
@@ -141,6 +125,11 @@ struct ViewerView: View {
         }
     }
 
+    private func openSecondaryDocument() {
+        guard let picked = ViewerSecondaryDocumentPicker.pick() else { return }
+        load(picked, side: .secondary)
+    }
+
     private func load(_ url: URL, side: ViewerSide, password: String? = nil) {
         let kind = Self.kind(for: url)
 
@@ -159,13 +148,13 @@ struct ViewerView: View {
                 return
             }
             assign(ViewerDocument(url: url, kind: .text, password: nil), side: side)
-            app.history.record(url: url)
+            recordOpen(url)
         case .pdf:
             do {
                 _ = try PDFTextExtractor.openDocument(at: url, password: password)
                 assign(ViewerDocument(url: url, kind: .pdf, password: password), side: side)
                 passwordFailure = nil
-                app.history.record(url: url)
+                recordOpen(url)
             } catch PDFLabError.encryptedPDFWrongPassword {
                 passwordFailure = password == nil ? nil : L10n.message(for: .encryptedPDFWrongPassword)
                 passwordRequest = PasswordRequest(url: url, side: side)
@@ -181,6 +170,11 @@ struct ViewerView: View {
                 alert = ViewerAlert(title: L10n.t("viewer.openFailed"), message: error.localizedDescription)
             }
         }
+    }
+
+    private func recordOpen(_ url: URL) {
+        app.history.record(url: url)
+        onDocumentOpened(url)
     }
 
     private func assign(_ document: ViewerDocument, side: ViewerSide) {

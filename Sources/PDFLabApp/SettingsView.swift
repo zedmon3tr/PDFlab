@@ -182,6 +182,7 @@ struct SettingsView: View {
                 }
             }
             .disabled(testState == .testing)
+            .buttonStyle(HoverButtonStyle())
 
             switch testState {
             case .idle:
@@ -210,6 +211,7 @@ struct SettingsView: View {
             Button(L10n.t("history.clear"), role: .destructive) {
                 app.history.clear()
             }
+            .buttonStyle(HoverButtonStyle(variant: .danger))
         }
     }
 

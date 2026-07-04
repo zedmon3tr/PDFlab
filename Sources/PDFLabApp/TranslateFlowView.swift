@@ -103,6 +103,8 @@ struct TranslateFlowView: View {
                         Label(L10n.t("translate.chooseFile"), systemImage: "doc.badge.plus")
                     }
                     .disabled(state.phase == .running)
+                    .buttonStyle(HoverButtonStyle(variant: .toolbar))
+                    .help(L10n.t("translate.chooseFile"))
                 }
             }
             .onAppear(perform: handleInitialURL)
@@ -222,7 +224,7 @@ struct TranslateFlowView: View {
             Button(L10n.t("translate.chooseFile")) {
                 showFileImporter = true
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(HoverButtonStyle(variant: .primary))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onDrop(of: [UTType.fileURL.identifier], isTargeted: nil) { providers in
@@ -273,11 +275,12 @@ struct TranslateFlowView: View {
                 } label: {
                     Label(L10n.t("translate.start"), systemImage: "play.fill")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(HoverButtonStyle(variant: .primary))
 
                 Button(L10n.t("common.cancel")) {
                     state.reset()
                 }
+                .buttonStyle(HoverButtonStyle())
             }
         }
         .padding(28)
@@ -295,6 +298,7 @@ struct TranslateFlowView: View {
             } label: {
                 Label(L10n.t("translate.cancelRun"), systemImage: "xmark.circle")
             }
+            .buttonStyle(HoverButtonStyle(variant: .danger))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -315,11 +319,12 @@ struct TranslateFlowView: View {
                 } label: {
                     Label(L10n.t("translate.save"), systemImage: "square.and.arrow.down")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(HoverButtonStyle(variant: .primary))
 
                 Button(L10n.t("translate.backToOptions")) {
                     state.phase = .optionsReady
                 }
+                .buttonStyle(HoverButtonStyle())
                 Spacer()
             }
             .padding(12)
@@ -348,15 +353,17 @@ struct TranslateFlowView: View {
                 } label: {
                     Label(L10n.t("translate.openInViewer"), systemImage: "rectangle.split.2x1")
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(HoverButtonStyle(variant: .primary))
                 .disabled(state.sourceURL == nil || state.outputURL == nil)
 
                 Button(L10n.t("translate.saveAgain")) {
                     state.phase = .previewing
                 }
+                .buttonStyle(HoverButtonStyle())
                 Button(L10n.t("translate.newFile")) {
                     state.reset()
                 }
+                .buttonStyle(HoverButtonStyle())
             }
         }
         .padding(28)
