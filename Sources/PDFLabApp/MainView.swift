@@ -196,10 +196,10 @@ struct MainView: View {
 
     private func historyRow(_ entry: HistoryEntry) -> some View {
         HStack {
-            Image(systemName: "doc.richtext")
-                .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.fileName)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
                 Text(entry.path)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
@@ -207,12 +207,9 @@ struct MainView: View {
                     .truncationMode(.middle)
             }
             Spacer()
-            Text(entry.openedAt, style: .date)
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .contentShape(Rectangle())
-        .padding(.vertical, 4)
+        .padding(8)
         .hoverHighlight()
         .onTapGesture { openHistoryEntry(entry) }
         .contextMenu {
