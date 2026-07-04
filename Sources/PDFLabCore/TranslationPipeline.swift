@@ -68,6 +68,59 @@ public final class TranslationPipeline: @unchecked Sendable {
         }
     }
 
+    /// OCR 语言优先级判定结果。probedPage:全扫描件为判定语言先行识别的首个扫描页
+    /// 结果(仅当其识别所用优先级即最终优先级时保留,供主循环复用)。
+    private struct OCRPriority {
+        var primaryChinese: Bool
+        var probedPage: (pageIndex: Int, lines: [TextLine], confidence: Double)?
+    }
+
+    /// 决定 OCR 语言优先级(需求 3.4:中文为主时 zh-Hans 排首位)。判定顺序:
+    /// 1. 用户强制方向(覆盖一切嗅探);
+    /// 2. 任一文本层页面能判定方向,按其结果;
+    /// 3. 全扫描(或文本层无法判定):用默认英文优先识别首个扫描页,按识别文本嗅探;
+    ///    若为中文则返回中文优先(该页由主循环用中文优先服务重新识别)。
+    private func resolveOCRPriority(
+        doc: PDFDocument,
+        totalPages: Int,
+        forcedDirection: TranslationDirection?
+    ) async throws -> OCRPriority {
+        if let forced = forcedDirection {
+            return OCRPriority(primaryChinese: forced == .zhToEn, probedPage: nil)
+        }
+
+        // 文本层嗅探:只读 page.string(与 extractPage 相同的 >=20 字符扫描页判据),
+        // 不做逐行定位,代价可忽略。
+        var firstScannedIndex: Int?
+        for pageIndex in 0..<totalPages {
+            try Task.checkCancellation()
+            guard let text = doc.page(at: pageIndex)?.string,
+                  text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 20 else {
+                if firstScannedIndex == nil { firstScannedIndex = pageIndex }
+                continue
+            }
+            if let direction = LanguageDetector.detectDirection(sample: text) {
+                return OCRPriority(primaryChinese: direction == .zhToEn, probedPage: nil)
+            }
+        }
+
+        // 无可判定文本层:识别首个扫描页判语言;无扫描页则优先级无关紧要,取默认。
+        guard let probeIndex = firstScannedIndex,
+              let page = doc.page(at: probeIndex),
+              let image = PageRasterizer.rasterize(page: page) else {
+            return OCRPriority(primaryChinese: false, probedPage: nil)
+        }
+        let probe = try await makeOCR(false).recognizePage(image, pageIndex: probeIndex)
+        let sample = probe.lines.map(\.text).joined(separator: "\n")
+        if LanguageDetector.detectDirection(sample: sample) == .zhToEn {
+            return OCRPriority(primaryChinese: true, probedPage: nil)
+        }
+        return OCRPriority(
+            primaryChinese: false,
+            probedPage: (probeIndex, probe.lines, probe.confidence)
+        )
+    }
+
     private func runStages(
         _ input: PipelineInput,
         progress: @escaping @Sendable (PipelineProgress) -> Void
@@ -75,8 +128,14 @@ public final class TranslationPipeline: @unchecked Sendable {
         try Task.checkCancellation()
         let doc = try PDFTextExtractor.openDocument(at: input.url, password: input.password)
         let totalPages = doc.pageCount
-        // OCR 语言优先级只能在方向未知前决定:强制中→英时中文优先,其余英文优先。
-        let ocr = makeOCR(input.forcedDirection == .zhToEn)
+        // 需求 3.4:中文为主的文档,OCR 语言优先级 zh-Hans 必须排首位。
+        // 先廉价预判语言(强制方向 > 文本层嗅探 > 首个扫描页试识别)再创建 OCR 服务。
+        let priority = try await resolveOCRPriority(
+            doc: doc,
+            totalPages: totalPages,
+            forcedDirection: input.forcedDirection
+        )
+        let ocr = makeOCR(priority.primaryChinese)
 
         // 阶段 1/2:逐页解析,扫描页转 OCR。
         var allLines: [TextLine] = []
@@ -87,9 +146,15 @@ public final class TranslationPipeline: @unchecked Sendable {
             let extraction = PDFTextExtractor.extractPage(doc, pageIndex: pageIndex)
             if extraction.isScanned {
                 progress(PipelineProgress(stage: .ocr, currentPage: pageIndex + 1, totalPages: totalPages))
-                guard let page = doc.page(at: pageIndex),
-                      let image = PageRasterizer.rasterize(page: page) else { continue }
-                let recognized = try await ocr.recognizePage(image, pageIndex: pageIndex)
+                let recognized: (lines: [TextLine], confidence: Double)
+                if let probe = priority.probedPage, probe.pageIndex == pageIndex {
+                    // 优先级判定阶段已用最终优先级识别过该页,直接复用,避免重复 OCR。
+                    recognized = (probe.lines, probe.confidence)
+                } else {
+                    guard let page = doc.page(at: pageIndex),
+                          let image = PageRasterizer.rasterize(page: page) else { continue }
+                    recognized = try await ocr.recognizePage(image, pageIndex: pageIndex)
+                }
                 if recognized.confidence < Self.lowConfidenceThreshold {
                     lowQualityPages.append(pageIndex)
                 }
