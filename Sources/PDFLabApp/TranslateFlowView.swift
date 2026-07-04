@@ -83,6 +83,7 @@ struct TranslateFlowView: View {
     @State private var directionRequest: TranslateDirectionRequest?
     @State private var alert: TranslateAlert?
     @State private var runTask: Task<Void, Never>?
+    @State private var isSaving = false
 
     init(
         url: URL? = nil,
@@ -320,11 +321,18 @@ struct TranslateFlowView: View {
                     Label(L10n.t("translate.save"), systemImage: "square.and.arrow.down")
                 }
                 .buttonStyle(HoverButtonStyle(variant: .primary))
+                .disabled(isSaving)
 
                 Button(L10n.t("translate.backToOptions")) {
                     state.phase = .optionsReady
                 }
                 .buttonStyle(HoverButtonStyle())
+                .disabled(isSaving)
+
+                if isSaving {
+                    ProgressView()
+                        .controlSize(.small)
+                }
                 Spacer()
             }
             .padding(12)
@@ -499,8 +507,11 @@ struct TranslateFlowView: View {
 
     private func saveCurrentDocument() {
         guard let composed = state.composed,
-              let sourceURL = state.sourceURL else { return }
+              let sourceURL = state.sourceURL,
+              !isSaving else { return }
 
+        // 保存面板必须留在主线程;真正的导出(CoreText 排版 / zip 子进程)
+        // 移到主线程外执行,避免大文档导出时 UI 卡死(需求 §5 全程异步)。
         let panel = NSSavePanel()
         panel.allowedContentTypes = [saveContentType(for: state.options.format)]
         panel.canCreateDirectories = true
@@ -508,24 +519,42 @@ struct TranslateFlowView: View {
 
         guard panel.runModal() == .OK, let outputURL = panel.url else { return }
 
-        do {
-            try export(composed, to: outputURL, format: state.options.format)
-            state.markSaved(outputURL: outputURL)
-        } catch let error as PDFLabError {
-            alert = TranslateAlert(title: L10n.t("translate.saveFailed"), message: translateErrorMessage(error))
-        } catch {
-            alert = TranslateAlert(title: L10n.t("translate.saveFailed"), message: error.localizedDescription)
+        let format = state.options.format
+        let uiLanguageChinese = L10n.isChinese
+        isSaving = true
+        Task {
+            defer { isSaving = false }
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try Self.performExport(
+                        composed,
+                        to: outputURL,
+                        format: format,
+                        uiLanguageChinese: uiLanguageChinese
+                    )
+                }.value
+                state.markSaved(outputURL: outputURL)
+            } catch let error as PDFLabError {
+                alert = TranslateAlert(title: L10n.t("translate.saveFailed"), message: translateErrorMessage(error))
+            } catch {
+                alert = TranslateAlert(title: L10n.t("translate.saveFailed"), message: error.localizedDescription)
+            }
         }
     }
 
-    private func export(_ document: ComposedDocument, to url: URL, format: OutputFormat) throws {
+    private nonisolated static func performExport(
+        _ document: ComposedDocument,
+        to url: URL,
+        format: OutputFormat,
+        uiLanguageChinese: Bool
+    ) throws {
         switch format {
         case .markdown:
-            try MarkdownExporter().export(document, to: url, uiLanguageChinese: L10n.isChinese)
+            try MarkdownExporter().export(document, to: url, uiLanguageChinese: uiLanguageChinese)
         case .pdf:
-            try PDFExporter().export(document, to: url, uiLanguageChinese: L10n.isChinese)
+            try PDFExporter().export(document, to: url, uiLanguageChinese: uiLanguageChinese)
         case .docx:
-            try DocxExporter().export(document, to: url, uiLanguageChinese: L10n.isChinese)
+            try DocxExporter().export(document, to: url, uiLanguageChinese: uiLanguageChinese)
         }
     }
 
