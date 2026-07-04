@@ -1,8 +1,32 @@
-# PDFlab 实现计划
+# PDFlab 开发计划(dev-plan)
 
+> **文档定位**:开发计划与任务编排。读完 [product-spec.md](product-spec.md) 与 [design-brief.md](design-brief.md) 后,先调研技术栈有没有现成组件可复用,再把项目拆成 Phase(每个 Phase 有明确交付物),Phase 内再拆可独立测试的任务。开发细节(构建/约定/架构)见 [dev-build.md](dev-build.md)。
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 按需求文档 v1.3(`/Users/zzz/Documents/Obsidian Vault/知识库/PDF lab.md`)实现 PDFlab:macOS 15+ 原生应用,含"查看"(本地文件对照阅读、同步滚动)与"翻译"(PDF OCR/提取/中英互译,导出 PDF/Word/Markdown)两个模块。
+## 前置调研结论(2026-07,决定用什么/不重复造轮子)
+
+- **本地翻译**:Apple Translation 框架(macOS 15+,免费离线)作默认引擎,不接付费云。macOS 26 有直接构造器、15 需 SwiftUI 修饰符。
+- **OCR**:Vision 框架(26 `RecognizeDocumentsRequest` 直出结构,15 `RecognizeTextRequest`),不引第三方 OCR。
+- **PDF 读写/渲染**:PDFKit,不引第三方 PDF 库。
+- **语言检测**:NaturalLanguage(`NLLanguageRecognizer`)。
+- **docx 导出**:无合适零依赖 Swift 库 → 自建最小 OOXML(zip + XML),`/usr/bin/zip` 打包。
+- **云端翻译**:Google/DeepL 走免 Key 逆向端点(可插拔,随时可能失效);有道走官方智云 API;LLM 走 OpenAI 兼容协议。
+- **结论:零第三方依赖**,全部用系统框架 + 自建纯逻辑。
+
+## Phase 划分与交付物
+
+| Phase | 交付物 | 对应任务 |
+|---|---|---|
+| P0 脚手架 | 可构建可测的 SPM 双 target | T1–T2 |
+| P1 解析/OCR 核心 | 文本提取 + 扫描页 OCR + 段落重建 + 语言检测 | T3–T8 |
+| P2 翻译引擎组 | 5 个可插拔引擎 + Keychain + 限速/分块 | T9–T12、T11b |
+| P3 导出与管线 | 组装器 + 三格式导出 + 端到端管线 | T13–T17 |
+| P4 App 与 UI | 历史 + App 壳 + 查看模块 + 翻译 UI | T18–T21 |
+| P5 打包与验收 | dmg 打包 + 验收清单 + 最终审查 | T22 + 最终验收 |
+
+> 下方为按任务(task)的细粒度分解;Phase 是交付视角的聚合,任务是执行/测试/审查的最小单元。
+
+**Goal:** 按 [product-spec.md](product-spec.md)(v1.3)实现 PDFlab:macOS 15+ 原生应用,含"查看"(本地文件对照阅读、同步滚动)与"翻译"(PDF OCR/提取/中英互译,导出 PDF/Word/Markdown)两个模块。
 
 **Architecture:** SPM 双 target——`PDFLabCore`(纯逻辑库:解析/OCR/翻译引擎/导出/管线,全部可 `swift test`)+ `PDFLabApp`(SwiftUI 壳)。翻译引擎为可插拔协议适配器;Vision 与 Translation 框架按 `#available(macOS 26.0, *)` 双路径分支。
 
@@ -12,7 +36,7 @@
 
 ## Global Constraints
 
-- 仓库根目录:`/Users/zzz/Documents/Claude/PDFlab`(下称 `$ROOT`;2026-07-03 已从 "PDF lab" 改名去除空格。需求文档路径 `/Users/zzz/Documents/Obsidian Vault/知识库/PDF lab.md` 仍含空格,引用时须加引号)
+- 仓库根目录:`/Users/zzz/Documents/Claude/PDFlab`(下称 `$ROOT`;2026-07-03 已从 "PDF lab" 改名去除空格)。产品事实源为 `$ROOT/product-spec.md`(原 Obsidian `PDFlab.md` 已迁入仓库,只留指针)
 - 所有 swift 命令加前缀 `DEVELOPER_DIR=/Library/Developer/CommandLineTools`(系统 /Applications/Xcode.app 是 13.4,禁用;CLT 为 Swift 6.2.4 + macOS 26.2 SDK)
 - 最低部署目标 **macOS 15**;macOS 26 专属 API 一律 `if #available(macOS 26.0, *)` 分支,且必须保留 15 的回退路径(开发机即 macOS 15.7,是主要实测环境)
 - 零第三方依赖;测试框架用 Swift Testing(`import Testing`)
@@ -30,7 +54,7 @@
   - 复杂任务或遇到不确定问题(多文件集成、系统 API 双路径、逆向接口、调试)→ **fable 5**
   - 实现中途发现复杂度超预期时,升级为 fable 5 重派,不强行让原模型重试
 - **任务级审查**:每个任务完成后由审查子代理做规格符合性 + 代码质量双重审查,通过才算完成
-- **最终验收**:全部任务完成后,由**独立的 fable 5 代理**(不复用任何实现代理)做整体代码验收,对照需求文档 v1.3 与 `docs/验收清单.md`
+- **最终验收**:全部任务完成后,由**独立的 fable 5 代理**(不复用任何实现代理)做整体代码验收,对照 `product-spec.md`(v1.3)与 `验收清单.md`(均在仓库根)
 - 各任务模型路由参考:T1/T2/T4/T8/T9/T13/T14/T16/T18/T19/T22 → sonnet;T3/T5/T6/T11 → 视实现情况 sonnet 起步;T7/T10/T12/T15/T17/T20/T21 → fable 5
 
 ## 进度追踪与中断恢复(用户 2026-07-03 指定)
