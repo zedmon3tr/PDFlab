@@ -152,7 +152,11 @@ public final class TranslationPipeline: @unchecked Sendable {
                     recognized = (probe.lines, probe.confidence)
                 } else {
                     guard let page = doc.page(at: pageIndex),
-                          let image = PageRasterizer.rasterize(page: page) else { continue }
+                          let image = PageRasterizer.rasterize(page: page) else {
+                        // 光栅化失败:该页无法 OCR,标记为低质量页而非静默丢弃。
+                        lowQualityPages.append(pageIndex)
+                        continue
+                    }
                     recognized = try await ocr.recognizePage(image, pageIndex: pageIndex)
                 }
                 if recognized.confidence < Self.lowConfidenceThreshold {
