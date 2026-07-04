@@ -49,6 +49,7 @@ enum L10n {
         "viewer.addTranslation": ("添加译文文件", "Add Translation File"),
         "viewer.leftRatio": ("左侧", "Left"),
         "viewer.rightRatio": ("右侧", "Right"),
+        "viewer.resetRatio": ("重置两侧滚动比例为 100%", "Reset both scroll ratios to 100%"),
         "viewer.unsupported": ("暂不支持该文件格式", "This file format is not supported"),
         "viewer.openFailed": ("打开失败", "Failed to open"),
         "viewer.noDocument": ("等待打开文档", "Waiting for a document"),

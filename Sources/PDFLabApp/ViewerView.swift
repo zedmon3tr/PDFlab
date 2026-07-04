@@ -44,8 +44,9 @@ struct ViewerView: View {
                     .help(L10n.t("viewer.addTranslation"))
 
                     if secondary != nil {
-                        ratioStepper(L10n.t("viewer.leftRatio"), value: $ratioA)
-                        ratioStepper(L10n.t("viewer.rightRatio"), value: $ratioB)
+                        ratioControl(L10n.t("viewer.leftRatio"), value: $ratioA)
+                        ratioControl(L10n.t("viewer.rightRatio"), value: $ratioB)
+                        resetRatioButton
                     }
                 }
             }
@@ -109,11 +110,31 @@ struct ViewerView: View {
         }
     }
 
-    private func ratioStepper(_ title: String, value: Binding<Double>) -> some View {
-        Stepper(value: value, in: 0.5...2.0, step: 0.1) {
+    // macOS 工具栏常不渲染 Stepper 的 label,数值必须用独立 Text 显式呈现。
+    private func ratioControl(_ title: String, value: Binding<Double>) -> some View {
+        HStack(spacing: 4) {
             Text("\(title) \(Int((value.wrappedValue * 100).rounded()))%")
-                .frame(minWidth: 92, alignment: .leading)
+                .monospacedDigit()
+                .frame(minWidth: 72, alignment: .trailing)
+            Stepper(title, value: value, in: 0.5...2.0, step: 0.1)
+                .labelsHidden()
         }
+    }
+
+    private var isDefaultRatio: Bool {
+        abs(ratioA - 1.0) < 0.001 && abs(ratioB - 1.0) < 0.001
+    }
+
+    private var resetRatioButton: some View {
+        Button {
+            ratioA = 1.0
+            ratioB = 1.0
+        } label: {
+            Label(L10n.t("viewer.resetRatio"), systemImage: "arrow.counterclockwise")
+        }
+        .buttonStyle(HoverButtonStyle(variant: .toolbar))
+        .disabled(isDefaultRatio)
+        .help(L10n.t("viewer.resetRatio"))
     }
 
     private func loadInitialDocuments() {
@@ -184,6 +205,9 @@ struct ViewerView: View {
         case .primary:
             primary = document
         case .secondary:
+            // 每次进入/更换对照文档时把滚动比例恢复默认,不带上次残留值。
+            ratioA = 1.0
+            ratioB = 1.0
             secondary = document
         }
     }
