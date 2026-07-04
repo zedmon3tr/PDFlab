@@ -27,12 +27,11 @@ struct MainView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            VStack(alignment: .leading, spacing: 24) {
-                moduleCards
-                historySection
+            HStack(spacing: 0) {
+                historySidebar
+                Divider()
+                moduleArea
             }
-            .padding(28)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .navigationTitle(L10n.t("app.name"))
             .navigationDestination(for: Destination.self) { destination in
                 switch destination {
@@ -84,7 +83,16 @@ struct MainView: View {
         }
     }
 
-    // MARK: - 模块卡片
+    // MARK: - 模块卡片(右侧主内容区)
+
+    private var moduleArea: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            moduleCards
+            Spacer()
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
 
     private var moduleCards: some View {
         HStack(spacing: 20) {
@@ -132,9 +140,9 @@ struct MainView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - 历史列表
+    // MARK: - 历史列表(左侧固定侧边栏)
 
-    private var historySection: some View {
+    private var historySidebar: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(L10n.t("history.title"))
@@ -147,17 +155,21 @@ struct MainView: View {
                     clearHistory()
                 } label: {
                     Label(L10n.t("history.clear"), systemImage: "trash")
+                        .labelStyle(.iconOnly)
                 }
                 .buttonStyle(HoverButtonStyle(variant: .danger))
                 .disabled(historyState.entries.isEmpty)
                 .help(L10n.t("history.clear"))
             }
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
 
             if historyState.entries.isEmpty {
                 Text(L10n.t("history.empty"))
                     .font(.callout)
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .padding(.horizontal, 16)
             } else {
                 List(historyState.entries, id: \.path) { entry in
                     historyRow(entry)
@@ -166,7 +178,9 @@ struct MainView: View {
                 .scrollContentBackground(.hidden)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(width: 260)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .background(.quaternary.opacity(0.25))
     }
 
     private func historyRow(_ entry: HistoryEntry) -> some View {
