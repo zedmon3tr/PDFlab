@@ -19,13 +19,20 @@ struct SettingsView: View {
     @State private var pendingCloudEngineID: String?
 
     var body: some View {
-        Form {
-            appearanceSection
-            languageSection
-            engineSection
-            dataSection
+        TabView {
+            generalTab
+                .tabItem {
+                    Label(L10n.t("settings.tab.general"), systemImage: "gearshape")
+                }
+            servicesTab
+                .tabItem {
+                    Label(L10n.t("settings.tab.services"), systemImage: "globe")
+                }
+            aboutTab
+                .tabItem {
+                    Label(L10n.t("settings.tab.about"), systemImage: "info.circle")
+                }
         }
-        .formStyle(.grouped)
         .frame(width: 520)
         .frame(minHeight: 420)
         .onAppear(perform: loadSecrets)
@@ -50,6 +57,46 @@ struct SettingsView: View {
         } message: {
             Text(L10n.t("privacy.cloudNotice"))
         }
+    }
+
+    // MARK: - Tab 页
+
+    /// 设置(通用):外观 / 界面语言 / 数据管理。
+    private var generalTab: some View {
+        Form {
+            appearanceSection
+            languageSection
+            dataSection
+        }
+        .formStyle(.grouped)
+    }
+
+    /// 服务:翻译引擎与凭据配置。
+    private var servicesTab: some View {
+        Form {
+            engineSection
+        }
+        .formStyle(.grouped)
+    }
+
+    /// 关于:App 名称、版本、一句话简介。
+    private var aboutTab: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "doc.text.magnifyingglass")
+                .font(.system(size: 44, weight: .medium))
+                .foregroundStyle(.tint)
+            Text(L10n.t("app.name"))
+                .font(.title2.weight(.semibold))
+            Text("\(L10n.t("about.version")) \(PDFLabCoreInfo.version)")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Text(L10n.t("about.blurb"))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 40)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - 外观 / 语言

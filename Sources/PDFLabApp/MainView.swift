@@ -18,6 +18,7 @@ struct MainView: View {
     }
 
     @EnvironmentObject private var app: AppState
+    @Environment(\.openSettings) private var openSettings
 
     @State private var path: [Destination] = []
     @State private var historyState = MainHistoryState()
@@ -33,6 +34,16 @@ struct MainView: View {
                 moduleArea
             }
             .navigationTitle(L10n.t("app.name"))
+            .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        openSettings()
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .help(L10n.t("settings.open.help"))
+                }
+            }
             .navigationDestination(for: Destination.self) { destination in
                 switch destination {
                 case .viewer(let url):

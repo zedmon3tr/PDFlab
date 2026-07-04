@@ -112,6 +112,10 @@ enum L10n {
 
         // 设置 - 分区
         "settings.title": ("设置", "Settings"),
+        "settings.open.help": ("打开设置", "Open Settings"),
+        "settings.tab.general": ("设置", "Settings"),
+        "settings.tab.services": ("服务", "Services"),
+        "settings.tab.about": ("关于", "About"),
         "settings.appearance": ("外观", "Appearance"),
         "settings.appearance.system": ("跟随系统", "System"),
         "settings.appearance.light": ("浅色", "Light"),
@@ -139,6 +143,13 @@ enum L10n {
         "settings.testConnection.testing": ("正在测试…", "Testing…"),
         "settings.testConnection.success": ("连接成功", "Connection succeeded"),
         "settings.testConnection.failure": ("连接失败", "Connection failed"),
+
+        // 关于
+        "about.version": ("版本", "Version"),
+        "about.blurb": (
+            "本地 PDF 对照查看与中英互译导出工具:查看模块左右对照阅读,翻译模块 OCR/提取并导出 PDF、Word、Markdown。",
+            "A local tool for side-by-side PDF reading and Chinese–English translation: view documents in dual panes, or OCR/extract and export to PDF, Word, and Markdown."
+        ),
 
         // 隐私提示
         "privacy.cloudNotice": (
