@@ -37,9 +37,8 @@ struct MainView: View {
             .navigationTitle(L10n.t("app.name"))
             .navigationDestination(for: Destination.self) { destination in
                 switch destination {
-                case .viewer:
-                    // Task 20:替换为 ViewerView(url:)
-                    Text("Viewer")
+                case .viewer(let url):
+                    ViewerView(url: url)
                 case .translate:
                     // Task 21:替换为 TranslateFlowView(url:)
                     Text("Translate")
@@ -49,7 +48,7 @@ struct MainView: View {
         .onAppear { reloadHistory() }
         .fileImporter(
             isPresented: $showFileImporter,
-            allowedContentTypes: [.pdf],
+            allowedContentTypes: pendingModule == .translate ? [.pdf] : ViewerView.openableContentTypes,
             allowsMultipleSelection: false
         ) { result in
             guard case .success(let urls) = result, let url = urls.first else { return }
@@ -182,10 +181,10 @@ struct MainView: View {
     }
 
     private func open(url: URL) {
-        app.history.record(url: url)
-        reloadHistory()
         switch pendingModule {
         case .translate:
+            app.history.record(url: url)
+            reloadHistory()
             path.append(.translate(url))
         default:
             path.append(.viewer(url))
@@ -199,8 +198,6 @@ struct MainView: View {
             missingEntry = entry
             return
         }
-        app.history.record(url: url)
-        reloadHistory()
         path.append(.viewer(url))
     }
 }

@@ -45,6 +45,17 @@ enum L10n {
         "main.translate": ("翻译", "Translate"),
         "main.translate.subtitle": ("翻译整份 PDF 并导出", "Translate a whole PDF and export"),
 
+        // 查看模块
+        "viewer.addTranslation": ("添加译文文件", "Add Translation File"),
+        "viewer.leftRatio": ("左侧", "Left"),
+        "viewer.rightRatio": ("右侧", "Right"),
+        "viewer.unsupported": ("暂不支持该文件格式", "This file format is not supported"),
+        "viewer.openFailed": ("打开失败", "Failed to open"),
+        "viewer.noDocument": ("等待打开文档", "Waiting for a document"),
+        "viewer.password.title": ("PDF 密码", "PDF Password"),
+        "viewer.password.prompt": ("输入密码", "Enter password"),
+        "viewer.password.open": ("打开", "Open"),
+
         // 历史记录
         "history.title": ("最近打开", "Recent Files"),
         "history.empty": ("暂无最近打开的文件", "No recent files"),
