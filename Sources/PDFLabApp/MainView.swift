@@ -3,12 +3,11 @@ import UniformTypeIdentifiers
 import PDFLabCore
 
 /// 主界面:查看/翻译两张模块卡片 + 最近打开历史列表。
-/// 导航目的地为占位视图,Task 20(ViewerView)/ Task 21(TranslateFlowView)替换。
 struct MainView: View {
-    /// 导航目的地。Task 20/21 的视图接入点:
-    /// `.viewer(url)` → ViewerView(url:),`.translate(url)` → TranslateFlowView(url:)。
+    /// 导航目的地。翻译保存后的 viewer bridge 使用 `.viewerPair` 直接打开对照态。
     enum Destination: Hashable {
         case viewer(URL)
+        case viewerPair(URL, URL)
         case translate(URL)
     }
 
@@ -39,9 +38,14 @@ struct MainView: View {
                 switch destination {
                 case .viewer(let url):
                     ViewerView(url: url)
-                case .translate:
-                    // Task 21:替换为 TranslateFlowView(url:)
-                    Text("Translate")
+                case .viewerPair(let sourceURL, let outputURL):
+                    ViewerView(url: sourceURL, secondaryURL: outputURL)
+                case .translate(let url):
+                    TranslateFlowView(url: url) { sourceURL, outputURL in
+                        app.history.record(url: sourceURL)
+                        reloadHistory()
+                        path.append(.viewerPair(sourceURL, outputURL))
+                    }
                 }
             }
         }
