@@ -104,6 +104,18 @@ public final class TranslationPipeline: @unchecked Sendable {
         guard !paragraphs.isEmpty else { throw PDFLabError.noTextRecognized }
         let parsed = ParsedDocument(paragraphs: paragraphs, pageCount: totalPages, lowQualityPages: lowQualityPages)
 
+        if input.options.content == .extractionOnly {
+            try Task.checkCancellation()
+            progress(PipelineProgress(stage: .composing, currentPage: totalPages, totalPages: totalPages))
+            let composed = DocumentComposer.compose(
+                doc: parsed,
+                translations: [],
+                options: input.options,
+                direction: nil
+            )
+            return (composed, parsed)
+        }
+
         // 阶段 4:语言检测(LanguageDetector 内部取样本前 4000 字符)。
         let sample = paragraphs.map(\.text).joined(separator: "\n")
         let direction: TranslationDirection
