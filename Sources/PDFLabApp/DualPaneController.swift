@@ -108,7 +108,16 @@ struct DualPaneController: NSViewRepresentable {
         private var rightPane: Pane?
         private var observers: [NSObjectProtocol] = []
         private var math = ScrollSyncMath(ratioA: 1, ratioB: 1)
+        /// 同步守卫:仅在程序化设置对侧位置的同步调用栈内为 true,阻断同步派发的通知。
         private var isSyncing = false
+        /// 各侧最近一次被程序化设置后的滚动偏移。迟到的 boundsDidChange 通知若仍停在该值,
+        /// 判定为回声(被动滚动),不是用户滚动,直接丢弃——这是防互踢环路的主防线。
+        private var lastSetOffset: [Side: CGFloat] = [:]
+
+        /// 偏移比较容差(pt):小于一个滚轮刻度,既能吸收浮点/布局微调,又不会吞掉真实滚动。
+        private static let offsetTolerance: CGFloat = 2.0
+        /// 页内位置容差(页高的千分之二,A4 渲染下约 1–2pt):目标已在期望位置邻域内就不再设置。
+        private static let inPageTolerance = 0.002
 
         func update(
             _ splitView: NSSplitView,
@@ -124,6 +133,7 @@ struct DualPaneController: NSViewRepresentable {
             signature = newSignature
 
             detachObservers()
+            lastSetOffset.removeAll()
             splitView.subviews.forEach { $0.removeFromSuperview() }
 
             let newLeftPane = makePane(for: left)
@@ -190,40 +200,87 @@ struct DualPaneController: NSViewRepresentable {
             guard let sourceScroll = source.scrollView,
                   let targetScroll = target.scrollView else { return }
 
-            let sourceProgress = Self.progress(for: sourceScroll)
-            let targetProgress: Double
+            // 回声判定:该侧位置仍停留在上次程序化设置的值,说明这是 setProgress/go(to:)
+            // 的迟到通知(被动滚动),不是用户滚动,直接丢弃,不再反向同步。
+            let sourceOffset = sourceScroll.contentView.bounds.origin.y
+            if let programmed = lastSetOffset[side],
+               abs(programmed - sourceOffset) < Self.offsetTolerance {
+                return
+            }
+            lastSetOffset[side] = nil   // 位置已偏离记录值:确认是真实用户滚动
 
-            if let sourcePageCount = source.pageCount,
+            isSyncing = true
+            defer { isSyncing = false }
+
+            let didMove: Bool
+            if let sourcePDF = source.pdfView,
+               let targetPDF = target.pdfView,
+               let sourcePageCount = source.pageCount,
                let targetPageCount = target.pageCount,
                sourcePageCount > 0,
                sourcePageCount == targetPageCount {
-                targetProgress = pageAnchoredProgress(from: source, progress: sourceProgress, pageCount: sourcePageCount)
+                didMove = Self.syncPageAnchored(from: sourcePDF, to: targetPDF)
             } else {
-                targetProgress = side == .left
+                let sourceProgress = Self.progress(for: sourceScroll)
+                let targetProgress = side == .left
                     ? math.targetProgress(fromA: sourceProgress)
                     : math.targetProgress(fromB: sourceProgress)
+                didMove = Self.setProgress(targetProgress, for: targetScroll)
             }
 
-            isSyncing = true
-            Self.setProgress(targetProgress, for: targetScroll)
-            DispatchQueue.main.async { [weak self] in
-                self?.isSyncing = false
+            if didMove {
+                let targetSide: Side = side == .left ? .right : .left
+                lastSetOffset[targetSide] = targetScroll.contentView.bounds.origin.y
             }
         }
 
-        private func pageAnchoredProgress(from source: Pane, progress: Double, pageCount: Int) -> Double {
-            let fallbackPage = min(max(Int((progress * Double(pageCount)).rounded(.down)), 0), pageCount - 1)
-            let page: Int
-            if let pdfView = source.pdfView,
-               let document = pdfView.document,
-               let currentPage = pdfView.currentPage {
-                page = max(0, min(document.index(for: currentPage), pageCount - 1))
-            } else {
-                page = fallbackPage
+        /// 视口顶边锚点:落在哪一页、页内(自页顶起)的比例位置。全部取自 PDFView 真实页面几何。
+        private struct PageAnchor {
+            var pageIndex: Int
+            var fractionFromTop: Double   // 0 = 页顶,1 = 页底
+        }
+
+        private static func viewportTopAnchor(of pdfView: PDFView) -> PageAnchor? {
+            guard let document = pdfView.document else { return nil }
+            let bounds = pdfView.bounds
+            guard bounds.height > 0 else { return nil }
+            let topY = pdfView.isFlipped ? bounds.minY + 1 : bounds.maxY - 1
+            let topPoint = NSPoint(x: bounds.midX, y: topY)
+            guard let page = pdfView.page(for: topPoint, nearest: true) else { return nil }
+            let pagePoint = pdfView.convert(topPoint, to: page)
+            let pageBounds = page.bounds(for: pdfView.displayBox)
+            guard pageBounds.height > 0 else { return nil }
+            let fraction = Double((pageBounds.maxY - pagePoint.y) / pageBounds.height)
+            return PageAnchor(
+                pageIndex: document.index(for: page),
+                fractionFromTop: min(max(fraction, 0), 1)
+            )
+        }
+
+        /// 页锚点同步(两侧均为 PDF 且页数相同):源侧按视口几何求"顶边所在页 + 页内比例",
+        /// 目标侧用其文档同一页的真实 bounds 换算出目的点,经 PDFDestination 定位。
+        /// 全程不经过"均匀页高"的全局进度折算,页高不均/页面尺寸不同也不会跳页。
+        /// 返回是否真正移动了目标(已在期望位置邻域内则不动,天然断开互踢环路)。
+        private static func syncPageAnchored(from sourcePDF: PDFView, to targetPDF: PDFView) -> Bool {
+            guard let anchor = viewportTopAnchor(of: sourcePDF),
+                  let targetDocument = targetPDF.document,
+                  let targetPage = targetDocument.page(at: anchor.pageIndex) else { return false }
+
+            // 收敛截断:目标侧已停在同页同位置,不再设置。
+            if let current = viewportTopAnchor(of: targetPDF),
+               current.pageIndex == anchor.pageIndex,
+               abs(current.fractionFromTop - anchor.fractionFromTop) < inPageTolerance {
+                return false
             }
 
-            let inPage = progress * Double(pageCount) - Double(page)
-            return ScrollSyncMath.pageAnchored(page: page, inPage: inPage, pageCount: pageCount)
+            let pageBounds = targetPage.bounds(for: targetPDF.displayBox)
+            let destY = pageBounds.maxY - CGFloat(anchor.fractionFromTop) * pageBounds.height
+            let destination = PDFDestination(
+                page: targetPage,
+                at: NSPoint(x: pageBounds.minX, y: destY)
+            )
+            targetPDF.go(to: destination)
+            return true
         }
 
         private func makePane(for document: ViewerDocument) -> Pane {
@@ -317,15 +374,20 @@ struct DualPaneController: NSViewRepresentable {
             return min(max(visible.origin.y / maxOffset, 0), 1)
         }
 
-        private static func setProgress(_ progress: Double, for scrollView: NSScrollView) {
+        /// 按进度比例设置滚动位置。已在目标 ε 邻域内则不动(收敛截断,断开互踢环路),
+        /// 返回是否真正移动。
+        @discardableResult
+        private static func setProgress(_ progress: Double, for scrollView: NSScrollView) -> Bool {
             let visible = scrollView.contentView.bounds
             let documentHeight = scrollView.documentView?.bounds.height ?? 0
             let maxOffset = documentHeight - visible.height
-            guard maxOffset > 0 else { return }
+            guard maxOffset > 0 else { return false }
 
             let targetY = min(max(progress, 0), 1) * maxOffset
+            guard abs(targetY - visible.origin.y) >= offsetTolerance else { return false }
             scrollView.contentView.setBoundsOrigin(NSPoint(x: visible.origin.x, y: targetY))
             scrollView.reflectScrolledClipView(scrollView.contentView)
+            return true
         }
 
         private static func findScrollView(in view: NSView) -> NSScrollView? {

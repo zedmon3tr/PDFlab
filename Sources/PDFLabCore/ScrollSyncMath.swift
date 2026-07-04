@@ -1,3 +1,6 @@
+/// 进度比例同步的纯数学(两侧类型不同或页数不等时使用)。
+/// 两侧均为 PDF 且页数相同时,App 层(DualPaneController)直接用 PDFKit 页面几何做页锚点同步,
+/// 不再经过"均匀页高"的全局进度折算——原 `pageAnchored(page:inPage:pageCount:)` 因此废弃移除。
 public struct ScrollSyncMath: Sendable {
     public let ratioA: Double
     public let ratioB: Double
@@ -13,12 +16,6 @@ public struct ScrollSyncMath: Sendable {
 
     public func targetProgress(fromB progressB: Double) -> Double {
         Self.clamp01(progressB * (ratioB / ratioA))
-    }
-
-    public static func pageAnchored(page: Int, inPage: Double, pageCount: Int) -> Double {
-        guard pageCount > 0 else { return 0 }
-        let clampedPage = max(0, min(page, pageCount - 1))
-        return clamp01((Double(clampedPage) + clamp01(inPage)) / Double(pageCount))
     }
 
     private static func safeRatio(_ value: Double) -> Double {
