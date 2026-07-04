@@ -431,8 +431,8 @@ struct TranslateFlowView: View {
     }
 
     private func acceptFile(_ url: URL, password: String?) {
+        // 需求 3.1:翻译模块导入的文件不进入历史(历史只记查看模块主文件)。
         state.acceptFile(url, password: password)
-        app.history.record(url: url)
     }
 
     private func startPipeline() {

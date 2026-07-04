@@ -211,8 +211,7 @@ struct MainView: View {
     private func open(url: URL) {
         switch pendingModule {
         case .translate:
-            app.history.record(url: url)
-            reloadHistory()
+            // 需求 3.1:历史只记录查看模块打开的主文件,翻译模块导入不入历史。
             path.append(.translate(url))
         default:
             path.append(.viewer(url))

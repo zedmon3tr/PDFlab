@@ -148,13 +148,13 @@ struct ViewerView: View {
                 return
             }
             assign(ViewerDocument(url: url, kind: .text, password: nil), side: side)
-            recordOpen(url)
+            recordOpen(url, side: side)
         case .pdf:
             do {
                 _ = try PDFTextExtractor.openDocument(at: url, password: password)
                 assign(ViewerDocument(url: url, kind: .pdf, password: password), side: side)
                 passwordFailure = nil
-                recordOpen(url)
+                recordOpen(url, side: side)
             } catch PDFLabError.encryptedPDFWrongPassword {
                 passwordFailure = password == nil ? nil : L10n.message(for: .encryptedPDFWrongPassword)
                 passwordRequest = PasswordRequest(url: url, side: side)
@@ -172,7 +172,9 @@ struct ViewerView: View {
         }
     }
 
-    private func recordOpen(_ url: URL) {
+    private func recordOpen(_ url: URL, side: ViewerSide) {
+        // 需求 3.1:历史只记录主文件(左侧首个文档),加载的译文对照文件不入历史。
+        guard side == .primary else { return }
         app.history.record(url: url)
         onDocumentOpened(url)
     }
