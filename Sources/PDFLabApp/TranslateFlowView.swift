@@ -84,7 +84,6 @@ struct TranslateFlowView: View {
     @State private var alert: TranslateAlert?
     @State private var runTask: Task<Void, Never>?
     @State private var isSaving = false
-    @State private var cloudNoticePending = false
 
     init(
         url: URL? = nil,
@@ -197,18 +196,6 @@ struct TranslateFlowView: View {
                 }
             } message: {
                 Text(directionRequest?.message ?? L10n.t("translate.unsupportedLanguage.message"))
-            }
-            .alert(
-                L10n.t("privacy.cloudNotice.title"),
-                isPresented: $cloudNoticePending
-            ) {
-                Button(L10n.t("common.confirm")) {
-                    app.cloudNoticeAcknowledged = true
-                    startPipeline()
-                }
-                Button(L10n.t("common.cancel"), role: .cancel) {}
-            } message: {
-                Text(L10n.t("privacy.cloudNotice"))
             }
     }
 
@@ -458,14 +445,6 @@ struct TranslateFlowView: View {
 
     private func startPipeline() {
         guard let sourceURL = state.sourceURL else { return }
-
-        // 隐私门:默认/所选为云端引擎且尚未确认过时,先弹"内容将发送至第三方"确认,
-        // 确认后再真正开始(避免默认有道时文档在用户无感知下出本机)。
-        if AppState.cloudEngineIDs.contains(app.engineID), !app.cloudNoticeAcknowledged {
-            cloudNoticePending = true
-            return
-        }
-
         runTask?.cancel()
         state.startRunning()
 

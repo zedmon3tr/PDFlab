@@ -23,8 +23,7 @@ final class AppState: ObservableObject {
     @AppStorage("uiLanguage") var uiLanguage: String = "system" {
         willSet { objectWillChange.send() }
     }
-    // 默认引擎:有道免 Key 网页接口(用户 2026-07-04 指定)。属云端非官方引擎,
-    // 故首次翻译前由 TranslateFlowView 强制弹隐私确认(设置面板切换同样拦截)。
+    // 默认引擎:有道免 Key 网页接口(用户 2026-07-04 指定)。
     @AppStorage("engineID") var engineID: String = "youdao" {
         willSet { objectWillChange.send() }
     }
