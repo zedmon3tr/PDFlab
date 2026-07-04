@@ -83,14 +83,21 @@ public struct DeepLXEngine: TranslationEngine {
 
     private static func jsonEscape(_ s: String) -> String {
         var out = ""
-        for ch in s {
-            switch ch {
+        for scalar in s.unicodeScalars {
+            switch scalar {
             case "\\": out += "\\\\"
             case "\"": out += "\\\""
             case "\n": out += "\\n"
             case "\r": out += "\\r"
             case "\t": out += "\\t"
-            default: out.append(ch)
+            default:
+                if scalar.value < 0x20 {
+                    // U+0020 以下控制字符(如 PDF 换页符 U+000C)必须 \u00XX 转义,
+                    // 否则请求体不是合法 JSON。
+                    out += String(format: "\\u%04x", scalar.value)
+                } else {
+                    out.unicodeScalars.append(scalar)
+                }
             }
         }
         return out
