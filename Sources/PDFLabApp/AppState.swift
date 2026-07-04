@@ -8,15 +8,13 @@ import PDFLabCore
 final class AppState: ObservableObject {
     // Keychain 键名(service 固定为 "com.pdflab.app",见 KeychainStore)
     static let keychainLLMAPIKey = "llm.apiKey"
-    static let keychainYoudaoAppKey = "youdao.appKey"
-    static let keychainYoudaoAppSecret = "youdao.appSecret"
 
     /// 引擎 ID 全集(设置面板下拉顺序)。
     static let engineIDs = ["apple", "llm", "google", "deepl", "youdao"]
     /// 会把文档内容发往云端的引擎(首次选中时需要隐私确认)。
     static let cloudEngineIDs: Set<String> = ["llm", "google", "deepl", "youdao"]
     /// 非官方接口引擎(设置面板显示不稳定 badge)。
-    static let unofficialEngineIDs: Set<String> = ["google", "deepl"]
+    static let unofficialEngineIDs: Set<String> = ["google", "deepl", "youdao"]
 
     // @AppStorage 在 ObservableObject 内不会自动触发刷新,willSet 手动补发。
     @AppStorage("appearance") var appearance: String = "system" {
@@ -46,7 +44,8 @@ final class AppState: ObservableObject {
 
     /// 按当前 engineID 构造翻译引擎。
     /// - apple 注入 `AppleTranslationHost.shared`(macOS 15 的 .translationTask 宿主);
-    /// - llm/youdao 从 Keychain 取凭据,缺失时以空字符串构造(调用时由引擎报错)。
+    /// - llm 从 Keychain 取凭据,缺失时以空字符串构造(调用时由引擎报错);
+    /// - google/deepl/youdao 为免 Key 非官方引擎,零配置。
     func makeEngine() -> TranslationEngine {
         switch engineID {
         case "llm":
@@ -59,10 +58,7 @@ final class AppState: ObservableObject {
         case "deepl":
             return DeepLXEngine()
         case "youdao":
-            return YoudaoZhiyunEngine(
-                appKey: KeychainStore.load(key: Self.keychainYoudaoAppKey) ?? "",
-                appSecret: KeychainStore.load(key: Self.keychainYoudaoAppSecret) ?? ""
-            )
+            return YoudaoWebEngine()
         default:
             return AppleLocalEngine(legacyRunner: AppleTranslationHost.shared)
         }

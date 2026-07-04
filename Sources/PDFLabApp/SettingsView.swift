@@ -14,8 +14,6 @@ struct SettingsView: View {
 
     // 秘密凭据只走 Keychain;本地 @State 仅作输入缓冲。
     @State private var llmAPIKey: String = ""
-    @State private var youdaoAppKey: String = ""
-    @State private var youdaoAppSecret: String = ""
 
     @State private var testState: TestState = .idle
     @State private var pendingCloudEngineID: String?
@@ -101,8 +99,6 @@ struct SettingsView: View {
 
             if app.engineID == "llm" {
                 llmFields
-            } else if app.engineID == "youdao" {
-                youdaoFields
             }
         }
     }
@@ -144,23 +140,6 @@ struct SettingsView: View {
                     config: LLMConfig(baseURL: app.llmBaseURL, model: app.llmModel),
                     apiKey: llmAPIKey
                 )
-                try await engine.testConnection()
-            }
-        }
-    }
-
-    private var youdaoFields: some View {
-        Group {
-            TextField(L10n.t("settings.youdao.appKey"), text: $youdaoAppKey)
-                .onChange(of: youdaoAppKey) { _, newValue in
-                    persistSecret(newValue, key: AppState.keychainYoudaoAppKey)
-                }
-            SecureField(L10n.t("settings.youdao.appSecret"), text: $youdaoAppSecret)
-                .onChange(of: youdaoAppSecret) { _, newValue in
-                    persistSecret(newValue, key: AppState.keychainYoudaoAppSecret)
-                }
-            testConnectionRow {
-                let engine = YoudaoZhiyunEngine(appKey: youdaoAppKey, appSecret: youdaoAppSecret)
                 try await engine.testConnection()
             }
         }
@@ -219,8 +198,6 @@ struct SettingsView: View {
 
     private func loadSecrets() {
         llmAPIKey = KeychainStore.load(key: AppState.keychainLLMAPIKey) ?? ""
-        youdaoAppKey = KeychainStore.load(key: AppState.keychainYoudaoAppKey) ?? ""
-        youdaoAppSecret = KeychainStore.load(key: AppState.keychainYoudaoAppSecret) ?? ""
     }
 
     private func persistSecret(_ value: String, key: String) {

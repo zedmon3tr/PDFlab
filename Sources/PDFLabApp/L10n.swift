@@ -135,8 +135,6 @@ enum L10n {
         "settings.llm.baseURL": ("接口地址 (baseURL)", "Base URL"),
         "settings.llm.model": ("模型", "Model"),
         "settings.llm.apiKey": ("API Key", "API Key"),
-        "settings.youdao.appKey": ("应用 ID (appKey)", "App Key"),
-        "settings.youdao.appSecret": ("应用密钥 (appSecret)", "App Secret"),
         "settings.testConnection": ("测试连接", "Test Connection"),
         "settings.testConnection.testing": ("正在测试…", "Testing…"),
         "settings.testConnection.success": ("连接成功", "Connection succeeded"),
