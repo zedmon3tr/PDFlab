@@ -136,9 +136,22 @@ struct MainView: View {
 
     private var historySection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(L10n.t("history.title"))
-                .font(.headline)
-                .foregroundStyle(.secondary)
+            HStack {
+                Text(L10n.t("history.title"))
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Button {
+                    clearHistory()
+                } label: {
+                    Label(L10n.t("history.clear"), systemImage: "trash")
+                }
+                .buttonStyle(HoverButtonStyle(variant: .danger))
+                .disabled(historyState.entries.isEmpty)
+                .help(L10n.t("history.clear"))
+            }
 
             if historyState.entries.isEmpty {
                 Text(L10n.t("history.empty"))
@@ -189,6 +202,10 @@ struct MainView: View {
 
     private func reloadHistory() {
         historyState.reload(history: app.history)
+    }
+
+    private func clearHistory() {
+        historyState.clear(history: app.history)
     }
 
     private func open(url: URL) {

@@ -19,24 +19,34 @@ public final class HistoryStore: @unchecked Sendable {
 
     private let defaults: UserDefaults
     private let maxEntries: Int
+    private let retentionDays: Int
+    private let now: @Sendable () -> Date
     private let lock = NSLock()
 
-    public init(defaults: UserDefaults = .standard, maxEntries: Int = 20) {
+    public init(
+        defaults: UserDefaults = .standard,
+        maxEntries: Int = 20,
+        retentionDays: Int = 30,
+        now: @escaping @Sendable () -> Date = { Date() }
+    ) {
         self.defaults = defaults
         self.maxEntries = maxEntries
+        self.retentionDays = retentionDays
+        self.now = now
     }
 
     /// Records a file open, deduping by path (moves to front, updates openedAt),
-    /// and caps the list at maxEntries, dropping the oldest entries.
+    /// pruning old entries, and capping the list at maxEntries.
     public func record(url: URL) {
         lock.lock()
         defer { lock.unlock() }
 
         let path = url.path
-        var current = loadEntries()
+        let openedAt = now()
+        var current = pruneExpired(loadEntries(), relativeTo: openedAt)
         current.removeAll { $0.path == path }
 
-        let entry = HistoryEntry(path: path, fileName: url.lastPathComponent, openedAt: Date())
+        let entry = HistoryEntry(path: path, fileName: url.lastPathComponent, openedAt: openedAt)
         current.insert(entry, at: 0)
 
         if current.count > maxEntries {
@@ -50,7 +60,12 @@ public final class HistoryStore: @unchecked Sendable {
     public func entries() -> [HistoryEntry] {
         lock.lock()
         defer { lock.unlock() }
-        return loadEntries()
+        let loaded = loadEntries()
+        let pruned = pruneExpired(loaded, relativeTo: now())
+        if pruned != loaded {
+            saveEntries(pruned)
+        }
+        return pruned
     }
 
     /// Removes the entry matching the given path, if any.
@@ -58,7 +73,7 @@ public final class HistoryStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        var current = loadEntries()
+        var current = pruneExpired(loadEntries(), relativeTo: now())
         current.removeAll { $0.path == path }
         saveEntries(current)
     }
@@ -74,6 +89,12 @@ public final class HistoryStore: @unchecked Sendable {
         guard let data = defaults.data(forKey: Self.storageKey) else { return [] }
         guard let decoded = try? JSONDecoder().decode([HistoryEntry].self, from: data) else { return [] }
         return decoded
+    }
+
+    private func pruneExpired(_ entries: [HistoryEntry], relativeTo referenceDate: Date) -> [HistoryEntry] {
+        let retentionInterval = TimeInterval(max(retentionDays, 0)) * 24 * 60 * 60
+        let cutoff = referenceDate.addingTimeInterval(-retentionInterval)
+        return entries.filter { $0.openedAt >= cutoff }
     }
 
     private func saveEntries(_ entries: [HistoryEntry]) {

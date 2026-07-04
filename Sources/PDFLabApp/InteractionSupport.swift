@@ -10,6 +10,11 @@ struct MainHistoryState: Equatable {
         entries = history.entries()
     }
 
+    mutating func clear(history: HistoryStore) {
+        history.clear()
+        entries = []
+    }
+
     mutating func viewerDidOpen(_ url: URL, history: HistoryStore) {
         let currentEntries = history.entries()
         if currentEntries.first?.path == url.path {
