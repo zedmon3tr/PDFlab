@@ -33,7 +33,8 @@ public struct YoudaoZhiyunEngine: TranslationEngine {
     }
 
     /// 设置面板"测试连接":翻译一条 "hello",期待非空译文。
-    /// 凭据错误/欠费时有道返回 200 + 非零 errorCode,由 translateChunk 映射为 engineUnavailable。
+    /// 凭据错误(errorCode 108/202/401)由 translateChunk 映射为 engineInvalidKey,
+    /// 欠费/超额(如 411)等其余错误映射为 engineUnavailable。
     public func testConnection() async throws {
         await limiter.waitTurn()
         let reply = try await translateChunk("hello", direction: .enToZh)
@@ -78,10 +79,20 @@ public struct YoudaoZhiyunEngine: TranslationEngine {
         if http.statusCode == 429 { throw PDFLabError.engineRateLimited }
         guard (200..<300).contains(http.statusCode) else { throw PDFLabError.engineUnavailable(engineID: id) }
 
-        // 有道对凭据/额度错误返回 200 + 非零 errorCode(如 401/411),统一映射 engineUnavailable。
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              root["errorCode"] as? String == "0",
-              let translation = root["translation"] as? [String] else {
+        // 有道对凭据/额度错误返回 200 + 非零 errorCode:
+        // 108(appKey 无效)/202(签名错误,含 appSecret 错)/401(账户异常)→ engineInvalidKey,
+        // 让设置面板"测试连接"提示"密钥无效"(与 LLM 引擎 UX 对齐);
+        // 411(超额)等其余错误码 → engineUnavailable。
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw PDFLabError.engineUnavailable(engineID: id)
+        }
+        if let errorCode = root["errorCode"] as? String, errorCode != "0" {
+            if ["108", "202", "401"].contains(errorCode) {
+                throw PDFLabError.engineInvalidKey
+            }
+            throw PDFLabError.engineUnavailable(engineID: id)
+        }
+        guard let translation = root["translation"] as? [String] else {
             throw PDFLabError.engineUnavailable(engineID: id)
         }
         return translation.joined()
