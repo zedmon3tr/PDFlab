@@ -55,8 +55,9 @@ struct DualPaneController: NSViewRepresentable {
     func makeNSView(context: Context) -> NSSplitView {
         let splitView = NSSplitView()
         splitView.isVertical = true
-        splitView.dividerStyle = .thin
+        splitView.dividerStyle = .paneSplitter
         splitView.autoresizesSubviews = true
+        splitView.delegate = context.coordinator.splitDelegate
         return splitView
     }
 
@@ -102,6 +103,9 @@ struct DualPaneController: NSViewRepresentable {
                 scrollView?.contentView.postsBoundsChangedNotifications = true
             }
         }
+
+        /// 分隔条委托:加宽命中区、约束两侧最小宽度,让 .paneSplitter 分隔条真正可抓可拖。
+        let splitDelegate = SplitDelegate()
 
         private var signature: String?
         private var leftPane: Pane?
@@ -415,6 +419,24 @@ struct DualPaneController: NSViewRepresentable {
                 }
             }
             return nil
+        }
+    }
+
+    /// 让细分隔条真正可抓:把命中区加宽到 ±hitSlop,并约束两侧最小宽度。
+    final class SplitDelegate: NSObject, NSSplitViewDelegate {
+        private static let minPaneWidth: CGFloat = 200
+        private static let hitSlop: CGFloat = 4
+
+        func splitView(_ splitView: NSSplitView, effectiveRect proposedEffectiveRect: NSRect, forDrawnRect drawnRect: NSRect, ofDividerAt dividerIndex: Int) -> NSRect {
+            proposedEffectiveRect.insetBy(dx: -Self.hitSlop, dy: 0)
+        }
+
+        func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+            max(proposedMinimumPosition, Self.minPaneWidth)
+        }
+
+        func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+            min(proposedMaximumPosition, splitView.bounds.width - Self.minPaneWidth)
         }
     }
 }
