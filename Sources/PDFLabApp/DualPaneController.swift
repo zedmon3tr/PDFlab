@@ -113,6 +113,9 @@ struct DualPaneController: NSViewRepresentable {
         /// 各侧最近一次被程序化设置后的滚动偏移。迟到的 boundsDidChange 通知若仍停在该值,
         /// 判定为回声(被动滚动),不是用户滚动,直接丢弃——这是防互踢环路的主防线。
         private var lastSetOffset: [Side: CGFloat] = [:]
+        /// 各侧上次观察到的滚动偏移,用于按屏增量同步计算 Δ。
+        /// 回声通知也会更新此值(但不触发反向同步),避免下次误把回声位移当用户增量。
+        private var lastObservedOffset: [Side: CGFloat] = [:]
 
         /// 偏移比较容差(pt):小于一个滚轮刻度,既能吸收浮点/布局微调,又不会吞掉真实滚动。
         private static let offsetTolerance: CGFloat = 2.0
@@ -134,6 +137,7 @@ struct DualPaneController: NSViewRepresentable {
 
             detachObservers()
             lastSetOffset.removeAll()
+            lastObservedOffset.removeAll()
             splitView.subviews.forEach { $0.removeFromSuperview() }
 
             let newLeftPane = makePane(for: left)
@@ -202,9 +206,11 @@ struct DualPaneController: NSViewRepresentable {
 
             // 回声判定:该侧位置仍停留在上次程序化设置的值,说明这是 setProgress/go(to:)
             // 的迟到通知(被动滚动),不是用户滚动,直接丢弃,不再反向同步。
+            // 但仍要把观察偏移更新到当前值,否则下一次真实滚动会把回声位移误算进 Δ。
             let sourceOffset = sourceScroll.contentView.bounds.origin.y
             if let programmed = lastSetOffset[side],
                abs(programmed - sourceOffset) < Self.offsetTolerance {
+                lastObservedOffset[side] = sourceOffset
                 return
             }
             lastSetOffset[side] = nil   // 位置已偏离记录值:确认是真实用户滚动
@@ -219,18 +225,33 @@ struct DualPaneController: NSViewRepresentable {
                let targetPageCount = target.pageCount,
                sourcePageCount > 0,
                sourcePageCount == targetPageCount {
+                // 精确模式:页数相同的两 PDF 走页锚点几何同步(不变)。
                 didMove = Self.syncPageAnchored(from: sourcePDF, to: targetPDF)
+                // 页锚点模式不依赖增量,但仍同步观察偏移以便切换到增量分支时基线正确。
+                lastObservedOffset[side] = sourceOffset
             } else {
-                let sourceProgress = Self.progress(for: sourceScroll)
-                let targetProgress = side == .left
-                    ? math.targetProgress(fromA: sourceProgress)
-                    : math.targetProgress(fromB: sourceProgress)
-                didMove = Self.setProgress(targetProgress, for: targetScroll)
+                // 兜底:按屏增量同步。源侧 Δ 折算成源侧屏数,乘比例系数,换算成目标点数叠加。
+                let previous = lastObservedOffset[side] ?? sourceOffset
+                let deltaPts = sourceOffset - previous
+                lastObservedOffset[side] = sourceOffset
+
+                let sourceViewport = sourceScroll.contentView.bounds.height
+                if deltaPts != 0, sourceViewport > 0 {
+                    let sourceScreens = Double(deltaPts) / Double(sourceViewport)
+                    let targetScreens = side == .left
+                        ? math.targetScreens(fromA: sourceScreens)
+                        : math.targetScreens(fromB: sourceScreens)
+                    didMove = Self.applyScreenDelta(targetScreens, to: targetScroll)
+                } else {
+                    didMove = false
+                }
             }
 
             if didMove {
                 let targetSide: Side = side == .left ? .right : .left
-                lastSetOffset[targetSide] = targetScroll.contentView.bounds.origin.y
+                let targetOffset = targetScroll.contentView.bounds.origin.y
+                lastSetOffset[targetSide] = targetOffset
+                lastObservedOffset[targetSide] = targetOffset
             }
         }
 
@@ -366,24 +387,18 @@ struct DualPaneController: NSViewRepresentable {
             return Pane(view: container, scrollView: nil, pdfView: nil)
         }
 
-        private static func progress(for scrollView: NSScrollView) -> Double {
-            let visible = scrollView.contentView.bounds
-            let documentHeight = scrollView.documentView?.bounds.height ?? 0
-            let maxOffset = documentHeight - visible.height
-            guard maxOffset > 0 else { return 0 }
-            return min(max(visible.origin.y / maxOffset, 0), 1)
-        }
-
-        /// 按进度比例设置滚动位置。已在目标 ε 邻域内则不动(收敛截断,断开互踢环路),
-        /// 返回是否真正移动。
+        /// 按屏增量滚动目标侧:targetScreens 屏 → 目标视口高度 × 屏数 = 目标点数,
+        /// 叠加到目标当前偏移,截断到 [0, maxOffset]。已在目标 ε 邻域内则不动(收敛截断,
+        /// 断开互踢环路;目标触顶/触底后无法再动也自然停下)。返回是否真正移动。
         @discardableResult
-        private static func setProgress(_ progress: Double, for scrollView: NSScrollView) -> Bool {
+        private static func applyScreenDelta(_ targetScreens: Double, to scrollView: NSScrollView) -> Bool {
             let visible = scrollView.contentView.bounds
             let documentHeight = scrollView.documentView?.bounds.height ?? 0
             let maxOffset = documentHeight - visible.height
-            guard maxOffset > 0 else { return false }
+            guard maxOffset > 0, visible.height > 0, targetScreens.isFinite else { return false }
 
-            let targetY = min(max(progress, 0), 1) * maxOffset
+            let deltaPts = CGFloat(targetScreens) * visible.height
+            let targetY = min(max(visible.origin.y + deltaPts, 0), maxOffset)
             guard abs(targetY - visible.origin.y) >= offsetTolerance else { return false }
             scrollView.contentView.setBoundsOrigin(NSPoint(x: visible.origin.x, y: targetY))
             scrollView.reflectScrolledClipView(scrollView.contentView)
