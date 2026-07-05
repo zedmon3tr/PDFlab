@@ -1,6 +1,44 @@
 import SwiftUI
 import PDFLabCore
 
+struct SettingsServiceDescriptor: Identifiable, Equatable {
+    enum Configuration: Equatable {
+        case none
+        case apiKey
+    }
+
+    var id: String
+    var systemImage: String
+    var configuration: Configuration
+
+    static let all: [SettingsServiceDescriptor] = AppState.engineIDs.map { id in
+        SettingsServiceDescriptor(
+            id: id,
+            systemImage: Self.systemImage(for: id),
+            configuration: id == "llm" ? .apiKey : .none
+        )
+    }
+
+    static func descriptor(for id: String) -> SettingsServiceDescriptor? {
+        all.first { $0.id == id }
+    }
+
+    func enabledBadge(isCurrent: Bool) -> String? {
+        isCurrent ? L10n.t("settings.service.enabled") : nil
+    }
+
+    private static func systemImage(for id: String) -> String {
+        switch id {
+        case "apple": return "apple.logo"
+        case "llm": return "sparkles"
+        case "google": return "g.circle"
+        case "deepl": return "d.circle"
+        case "youdao": return "character.book.closed"
+        default: return "globe"
+        }
+    }
+}
+
 /// 设置面板(`Settings` scene):外观 / 界面语言 / 翻译引擎 / 数据管理。
 struct SettingsView: View {
     private enum TestState: Equatable {
@@ -33,8 +71,8 @@ struct SettingsView: View {
                     Label(L10n.t("settings.tab.about"), systemImage: "info.circle")
                 }
         }
-        .frame(width: 520)
-        .frame(minHeight: 420)
+        .frame(width: 760)
+        .frame(minHeight: 520)
         .onAppear(perform: loadSecrets)
         .alert(
             L10n.t("privacy.cloudNotice.title"),
@@ -73,10 +111,16 @@ struct SettingsView: View {
 
     /// 服务:翻译引擎与凭据配置。
     private var servicesTab: some View {
-        Form {
-            engineSection
+        HStack(spacing: 0) {
+            serviceList
+                .frame(width: 250)
+
+            Divider()
+
+            serviceDetail
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .formStyle(.grouped)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// 关于:App 名称、版本、一句话简介。
@@ -130,24 +174,24 @@ struct SettingsView: View {
 
     // MARK: - 引擎
 
-    private var engineSection: some View {
-        Section(L10n.t("settings.engine")) {
-            Picker(L10n.t("settings.engine"), selection: engineSelection) {
-                ForEach(AppState.engineIDs, id: \.self) { id in
-                    engineRowLabel(id).tag(id)
+    private var serviceList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L10n.t("settings.service.listTitle"))
+                .font(.headline)
+                .padding(.top, 16)
+                .padding(.horizontal, 14)
+
+            ScrollView {
+                LazyVStack(spacing: 2) {
+                    ForEach(SettingsServiceDescriptor.all) { service in
+                        serviceRow(service)
+                    }
                 }
-            }
-
-            if AppState.unofficialEngineIDs.contains(app.engineID) {
-                Label(L10n.t("engine.unofficialBadge"), systemImage: "exclamationmark.triangle")
-                    .font(.callout)
-                    .foregroundStyle(.orange)
-            }
-
-            if app.engineID == "llm" {
-                llmFields
+                .padding(.horizontal, 8)
+                .padding(.bottom, 12)
             }
         }
+        .background(.background)
     }
 
     /// 引擎切换拦截:首次选中云端引擎时先弹隐私确认,确认后才真正切换。
@@ -166,12 +210,93 @@ struct SettingsView: View {
         )
     }
 
-    private func engineRowLabel(_ id: String) -> Text {
-        let name = Text(L10n.t("engine.\(id)"))
-        guard AppState.unofficialEngineIDs.contains(id) else { return name }
-        return name + Text("  \(L10n.t("engine.unofficialBadge"))")
-            .font(.caption)
-            .foregroundColor(.secondary)
+    private func serviceRow(_ service: SettingsServiceDescriptor) -> some View {
+        let isCurrent = app.engineID == service.id
+
+        return Button {
+            engineSelection.wrappedValue = service.id
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: service.systemImage)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(isCurrent ? .white : .secondary)
+                    .frame(width: 18)
+
+                Text(L10n.t("engine.\(service.id)"))
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(isCurrent ? .white : .primary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 8)
+
+                if let badge = service.enabledBadge(isCurrent: isCurrent) {
+                    Text(badge)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(isCurrent ? .white : .secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule()
+                                .fill(isCurrent ? Color.white.opacity(0.18) : Color.secondary.opacity(0.12))
+                        )
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(isCurrent ? Color.accentColor : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(L10n.t("engine.\(service.id)"))
+    }
+
+    private var serviceDetail: some View {
+        let service = SettingsServiceDescriptor.descriptor(for: app.engineID) ?? SettingsServiceDescriptor.all[0]
+
+        return Group {
+            switch service.configuration {
+            case .none:
+                serviceEmptyState(service)
+            case .apiKey:
+                llmServicePanel(service)
+            }
+        }
+    }
+
+    private func serviceEmptyState(_ service: SettingsServiceDescriptor) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: service.systemImage)
+                .font(.system(size: 32, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text(String(format: L10n.t("settings.service.noConfiguration"), L10n.t("engine.\(service.id)")))
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func llmServicePanel(_ service: SettingsServiceDescriptor) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 10) {
+                Image(systemName: service.systemImage)
+                    .font(.title3)
+                    .foregroundStyle(.tint)
+                Text(L10n.t("engine.\(service.id)"))
+                    .font(.headline)
+            }
+
+            Form {
+                llmFields
+            }
+            .formStyle(.grouped)
+            .scrollDisabled(true)
+
+            Spacer(minLength: 0)
+        }
+        .padding(28)
     }
 
     private var llmFields: some View {

@@ -10,11 +10,11 @@ final class AppState: ObservableObject {
     static let keychainLLMAPIKey = "llm.apiKey"
 
     /// 引擎 ID 全集(设置面板下拉顺序)。
-    static let engineIDs = ["apple", "llm", "google", "deepl", "youdao"]
+    nonisolated static let engineIDs = ["apple", "llm", "google", "deepl", "youdao"]
     /// 会把文档内容发往云端的引擎(首次选中时需要隐私确认)。
-    static let cloudEngineIDs: Set<String> = ["llm", "google", "deepl", "youdao"]
+    nonisolated static let cloudEngineIDs: Set<String> = ["llm", "google", "deepl", "youdao"]
     /// 非官方接口引擎(设置面板显示不稳定 badge)。
-    static let unofficialEngineIDs: Set<String> = ["google", "deepl", "youdao"]
+    nonisolated static let unofficialEngineIDs: Set<String> = ["google", "deepl", "youdao"]
 
     // @AppStorage 在 ObservableObject 内不会自动触发刷新,willSet 手动补发。
     @AppStorage("appearance") var appearance: String = "system" {

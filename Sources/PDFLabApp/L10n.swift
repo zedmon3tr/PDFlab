@@ -94,6 +94,11 @@ enum L10n {
         "translate.stage.translating": ("翻译", "Translating"),
         "translate.stage.composing": ("组装", "Composing"),
         "translate.page.prefix": ("第", "Page"),
+        "translate.remaining.estimating": ("正在估算剩余时间", "Estimating time remaining"),
+        "translate.remaining.lessThanMinute": ("剩余不足 1 分钟", "Less than 1 min remaining"),
+        "translate.remaining.minutes": ("剩余约 %d 分钟", "About %d min remaining"),
+        "translate.remaining.hours": ("剩余约 %d 小时", "About %d hr remaining"),
+        "translate.remaining.hoursMinutes": ("剩余约 %d 小时 %d 分钟", "About %d hr %d min remaining"),
         "translate.save": ("保存", "Save"),
         "translate.backToOptions": ("返回选项", "Back to Options"),
         "translate.saved.title": ("已保存", "Saved"),
@@ -134,6 +139,9 @@ enum L10n {
         "settings.language.en": ("English", "English"),
         "settings.engine": ("翻译引擎", "Translation Engine"),
         "settings.data": ("数据管理", "Data Management"),
+        "settings.service.listTitle": ("翻译服务", "Translation Services"),
+        "settings.service.enabled": ("已启用", "Enabled"),
+        "settings.service.noConfiguration": ("%@ 没有可供配置的选项", "%@ has no configurable options"),
 
         // 设置 - 引擎名
         "engine.apple": ("本地翻译", "On-Device Translation"),
