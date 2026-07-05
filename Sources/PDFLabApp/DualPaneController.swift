@@ -488,6 +488,15 @@ struct DualPaneController: NSViewRepresentable {
             handleTrackingArea = area
 
             addToolTip(hitRect, owner: self, userData: nil)
+
+            // 分隔条移动后重设光标区域(hover 时显示左右拖动光标)。
+            window?.invalidateCursorRects(for: self)
+        }
+
+        override func resetCursorRects() {
+            super.resetCursorRects()
+            guard let rect = dividerRect() else { return }
+            addCursorRect(rect.insetBy(dx: -Self.hitSlop, dy: 0), cursor: .resizeLeftRight)
         }
 
         override func mouseEntered(with event: NSEvent) {
