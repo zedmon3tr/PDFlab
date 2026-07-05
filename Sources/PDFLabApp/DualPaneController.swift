@@ -465,6 +465,13 @@ struct DualPaneController: NSViewRepresentable {
             return NSRect(x: x, y: bounds.minY, width: dividerThickness, height: bounds.height)
         }
 
+        // 分隔条初始居中(Coordinator 异步 setPosition)与拖动都会移动分隔条,但不一定触发
+        // updateTrackingAreas;子视图每次重新布局都经这里,借此把 tracking/tooltip 矩形同步到分隔条新位置。
+        override func resizeSubviews(withOldSize oldSize: NSSize) {
+            super.resizeSubviews(withOldSize: oldSize)
+            updateTrackingAreas()
+        }
+
         override func updateTrackingAreas() {
             super.updateTrackingAreas()
 
