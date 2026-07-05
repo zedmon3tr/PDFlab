@@ -3,6 +3,8 @@ import PDFKit
 import SwiftUI
 import PDFLabCore
 
+// MARK: - 文档模型(供 ViewerView / 各面板复用)
+
 enum ViewerDocumentKind: Equatable {
     case pdf
     case text
@@ -42,519 +44,540 @@ enum ViewerTextLoader {
     ]
 }
 
-struct DualPaneController: NSViewRepresentable {
+struct DualPaneSplitMath {
+    var dividerThickness: CGFloat
+    var minPaneWidth: CGFloat
+
+    func clampedFraction(_ fraction: CGFloat, totalWidth: CGFloat) -> CGFloat {
+        guard totalWidth > 0 else { return 0.5 }
+        let contentWidth = max(totalWidth - dividerThickness, 1)
+        guard contentWidth >= 2 * minPaneWidth else {
+            return min(max(fraction, 0), 1)
+        }
+        let minFraction = minPaneWidth / contentWidth
+        let maxFraction = 1 - minFraction
+        return min(max(fraction, minFraction), maxFraction)
+    }
+
+    func projectedFraction(baseFraction: CGFloat, translation: CGFloat, totalWidth: CGFloat) -> CGFloat {
+        let contentWidth = max(totalWidth - dividerThickness, 1)
+        return clampedFraction(baseFraction + translation / contentWidth, totalWidth: totalWidth)
+    }
+}
+
+// MARK: - 对照双栏视图(SwiftUI 原生布局 + 原生 resize 光标分隔条)
+
+/// 左右并排对照两文档,同步滚动。分隔条是真正的 SwiftUI 视图(夹在 HStack 两栏之间),
+/// 故能拿到 hover 事件,`.pointerStyle(.columnResize)` 生效——这是从 NSSplitView 迁到
+/// SwiftUI 布局的核心原因(见 CHANGELOG:AppKit 分隔条的 resize 光标被 SwiftUI 宿主/PDFView 盖掉)。
+struct DualPaneView: View {
     var left: ViewerDocument
-    var right: ViewerDocument?
+    var right: ViewerDocument
     var ratioA: Double
     var ratioB: Double
 
+    /// 左栏占比(0...1),拖动分隔条时更新。
+    @State private var dividerFraction: CGFloat = 0.5
+    @State private var dragStartFraction: CGFloat?
+    @State private var isDraggingDivider = false
+    @StateObject private var sync = SyncScrollCoordinator()
+
+    /// 分隔条厚度(命中区 + 视觉留白)。
+    private static let dividerThickness: CGFloat = 10
+    /// 最小栏宽,窗口过窄时让路。
+    private static let minPaneWidth: CGFloat = 200
+    private static let splitMath = DualPaneSplitMath(
+        dividerThickness: dividerThickness,
+        minPaneWidth: minPaneWidth
+    )
+
+    var body: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            let fraction = clampedFraction(for: width)
+            let contentWidth = max(width - Self.dividerThickness, 0)
+            let leftWidth = contentWidth * fraction
+
+            HStack(spacing: 0) {
+                SinglePaneRepresentable(document: left, side: .left, sync: sync)
+                    .frame(width: leftWidth)
+                    .id(left.id)
+
+                divider(totalWidth: width)
+
+                SinglePaneRepresentable(document: right, side: .right, sync: sync)
+                    .frame(maxWidth: .infinity)
+                    .id(right.id)
+            }
+        }
+        .onAppear { sync.setRatios(ratioA: ratioA, ratioB: ratioB) }
+        .onChange(of: ratioA) { sync.setRatios(ratioA: ratioA, ratioB: ratioB) }
+        .onChange(of: ratioB) { sync.setRatios(ratioA: ratioA, ratioB: ratioB) }
+    }
+
+    /// 把 dividerFraction 夹到最小栏宽换算出的允许区间;宽度不足两栏最小宽时不强制,回落到 0.5 附近。
+    private func clampedFraction(for width: CGFloat) -> CGFloat {
+        Self.splitMath.clampedFraction(dividerFraction, totalWidth: width)
+    }
+
+    /// SwiftUI 分隔条:透明命中区 + 居中 capsule 把手(默认隐藏,hover/拖动时显示),
+    /// 原生 columnResize 光标 + tooltip + 拖动手势。
+    private func divider(totalWidth: CGFloat) -> some View {
+        DividerHandle(
+            isDragging: isDraggingDivider,
+            thickness: Self.dividerThickness
+        )
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    isDraggingDivider = true
+                    guard totalWidth > 0 else { return }
+                    if dragStartFraction == nil {
+                        dragStartFraction = clampedFraction(for: totalWidth)
+                    }
+                    let baseFraction = dragStartFraction ?? dividerFraction
+                    dividerFraction = Self.splitMath.projectedFraction(
+                        baseFraction: baseFraction,
+                        translation: value.translation.width,
+                        totalWidth: totalWidth
+                    )
+                }
+                .onEnded { _ in
+                    isDraggingDivider = false
+                    dragStartFraction = nil
+                    // 落定后归一化保存,避免拖出界的累积。
+                    dividerFraction = clampedFraction(for: totalWidth)
+                }
+        )
+    }
+}
+
+// MARK: - 分隔条把手(SwiftUI)
+
+/// HStack 中间的分隔条:全高透明命中区,居中一根 capsule 把手。
+/// 默认隐藏,hover 显示淡灰,拖动显示更亮一档。`.pointerStyle(.columnResize)` 给原生左右拖光标。
+private struct DividerHandle: View {
+    var isDragging: Bool
+    var thickness: CGFloat
+
+    @State private var isHovering = false
+
+    private static let handleWidth: CGFloat = 6
+    private static let handleHeight: CGFloat = 64
+
+    var body: some View {
+        ZStack {
+            // 透明命中区,撑满全高,确保 hover / drag 命中整条。
+            Color.clear
+                .contentShape(Rectangle())
+
+            Capsule()
+                .fill(handleColor)
+                .frame(width: Self.handleWidth, height: Self.handleHeight)
+        }
+        .frame(width: thickness)
+        .frame(maxHeight: .infinity)
+        .pointerStyle(.columnResize)
+        .onHover { isHovering = $0 }
+        .help(L10n.t("viewer.divider.resize"))
+    }
+
+    private var handleColor: Color {
+        if isDragging {
+            return Color.secondary.opacity(0.8)
+        } else if isHovering {
+            return Color.secondary.opacity(0.45)
+        } else {
+            return Color.clear
+        }
+    }
+}
+
+// MARK: - 单面板(NSViewRepresentable,按 kind 建 PDFView / NSTextView / 提示 label)
+
+/// 单侧文档面板。makeNSView 按 document.kind 建视图,并把该侧 scrollView/pdfView 注册进 sync;
+/// dismantle 时注销。PDFView 的 scrollView 递归查找,首帧可能未就绪,下一 runloop 再找一次。
+private struct SinglePaneRepresentable: NSViewRepresentable {
+    let document: ViewerDocument
+    let side: SyncScrollCoordinator.Side
+    let sync: SyncScrollCoordinator
+
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(sync: sync, side: side)
     }
 
-    func makeNSView(context: Context) -> NSSplitView {
-        let splitView = HandleSplitView()
-        splitView.isVertical = true
-        splitView.dividerStyle = .paneSplitter
-        splitView.autoresizesSubviews = true
-        splitView.delegate = context.coordinator.splitDelegate
-        return splitView
+    func makeNSView(context: Context) -> NSView {
+        let built = build(for: document)
+        context.coordinator.attach(view: built.view, scrollView: built.scrollView, pdfView: built.pdfView)
+        return built.view
     }
 
-    func updateNSView(_ splitView: NSSplitView, context: Context) {
-        context.coordinator.update(
-            splitView,
-            left: left,
-            right: right,
-            ratioA: ratioA,
-            ratioB: ratioB
+    func updateNSView(_ nsView: NSView, context: Context) {
+        // 文档不变时无需重建;文档本身随 ViewerView 的 sideBySide 切换携带,identity 变化会触发新的 makeNSView。
+        context.coordinator.refresh()
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    // MARK: 建视图
+
+    private func build(for document: ViewerDocument) -> (view: NSView, scrollView: NSScrollView?, pdfView: PDFView?) {
+        switch document.kind {
+        case .pdf:
+            return buildPDF(for: document)
+        case .text:
+            return buildText(for: document)
+        case .unsupported:
+            return (buildMessage(L10n.t("viewer.unsupported")), nil, nil)
+        }
+    }
+
+    private func buildPDF(for document: ViewerDocument) -> (NSView, NSScrollView?, PDFView?) {
+        guard let pdfDocument = try? PDFTextExtractor.openDocument(at: document.url, password: document.password) else {
+            return (buildMessage(L10n.t("viewer.openFailed")), nil, nil)
+        }
+
+        let pdfView = PDFView()
+        pdfView.document = pdfDocument
+        pdfView.displayMode = .singlePageContinuous
+        pdfView.displayDirection = .vertical
+        pdfView.displaysPageBreaks = true
+        pdfView.autoScales = true
+        pdfView.backgroundColor = .textBackgroundColor
+        pdfView.layoutDocumentView()
+
+        return (pdfView, SyncScrollCoordinator.findScrollView(in: pdfView), pdfView)
+    }
+
+    private func buildText(for document: ViewerDocument) -> (NSView, NSScrollView?, PDFView?) {
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = .textBackgroundColor
+
+        let textView = NSTextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.font = .systemFont(ofSize: 14)
+        textView.textColor = .labelColor
+        textView.backgroundColor = .textBackgroundColor
+        textView.textContainerInset = NSSize(width: 24, height: 24)
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.minSize = NSSize(width: 0, height: scrollView.contentSize.height)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.containerSize = NSSize(
+            width: scrollView.contentSize.width,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.textContainer?.widthTracksTextView = true
+        textView.string = ViewerTextLoader.load(from: document.url) ?? L10n.t("viewer.openFailed")
+
+        scrollView.documentView = textView
+        return (scrollView, scrollView, nil)
+    }
+
+    private func buildMessage(_ message: String) -> NSView {
+        let container = NSView()
+        let label = NSTextField(wrappingLabelWithString: message)
+        label.alignment = .center
+        label.textColor = .secondaryLabelColor
+        label.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(label)
+
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            label.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 24),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -24),
+        ])
+
+        return container
+    }
+
+    // MARK: Coordinator
+
+    final class Coordinator {
+        private let sync: SyncScrollCoordinator
+        private let side: SyncScrollCoordinator.Side
+        private weak var view: NSView?
+        private weak var pdfView: PDFView?
+
+        init(sync: SyncScrollCoordinator, side: SyncScrollCoordinator.Side) {
+            self.sync = sync
+            self.side = side
+        }
+
+        func attach(view: NSView, scrollView: NSScrollView?, pdfView: PDFView?) {
+            self.view = view
+            self.pdfView = pdfView
+            sync.register(side: side, view: view, scrollView: scrollView, pdfView: pdfView)
+            // PDFView 的 scrollView 首帧常未就绪:下一 runloop 再让 sync 补找一次。
+            DispatchQueue.main.async { [weak self] in
+                self?.sync.refreshRegistration(side: self?.side ?? .left)
+            }
+        }
+
+        func refresh() {
+            sync.refreshRegistration(side: side)
+        }
+
+        func detach() {
+            sync.unregister(side: side)
+        }
+    }
+}
+
+// MARK: - 同步滚动协调器
+
+/// 跨两个 SinglePaneRepresentable 承载同步滚动状态。两侧都注册后,
+/// 对各自 NSScrollView 的 clipView 挂 boundsDidChange 观察者(逻辑一比一保留自旧 Coordinator):
+/// 绝对映射(距顶屏数 × 系数)、回声判定(lastSetOffset)、收敛截断(tolerance)、isSyncing 守卫、
+/// 两侧均 PDF 且页数相同走页锚点几何精确模式。
+final class SyncScrollCoordinator: ObservableObject {
+    enum Side {
+        case left
+        case right
+    }
+
+    private final class Pane {
+        weak var view: NSView?
+        weak var scrollView: NSScrollView?
+        weak var pdfView: PDFView?
+
+        var pageCount: Int? { pdfView?.document?.pageCount }
+
+        func refreshScrollView() {
+            if scrollView == nil, let view {
+                scrollView = SyncScrollCoordinator.findScrollView(in: view)
+            }
+            scrollView?.contentView.postsBoundsChangedNotifications = true
+        }
+    }
+
+    private var leftPane: Pane?
+    private var rightPane: Pane?
+    private var observers: [NSObjectProtocol] = []
+    private var math = ScrollSyncMath(ratioA: 1, ratioB: 1)
+
+    /// 同步守卫:仅在程序化设置对侧位置的同步调用栈内为 true,阻断同步派发的通知。
+    private var isSyncing = false
+    /// 各侧最近一次被程序化设置后的滚动偏移。迟到的 boundsDidChange 通知若仍停在该值,
+    /// 判定为回声(被动滚动),直接丢弃——防互踢环路主防线。
+    private var lastSetOffset: [Side: CGFloat] = [:]
+
+    /// 偏移比较容差(pt):小于一个滚轮刻度。
+    private static let offsetTolerance: CGFloat = 2.0
+    /// 页内位置容差(页高的千分之二)。
+    private static let inPageTolerance = 0.002
+
+    // MARK: 注册
+
+    func setRatios(ratioA: Double, ratioB: Double) {
+        math = ScrollSyncMath(ratioA: ratioA, ratioB: ratioB)
+    }
+
+    func register(side: Side, view: NSView, scrollView: NSScrollView?, pdfView: PDFView?) {
+        let pane = Pane()
+        pane.view = view
+        pane.scrollView = scrollView
+        pane.pdfView = pdfView
+        pane.refreshScrollView()
+        switch side {
+        case .left: leftPane = pane
+        case .right: rightPane = pane
+        }
+        reattachObservers()
+    }
+
+    func refreshRegistration(side: Side) {
+        pane(for: side)?.refreshScrollView()
+        reattachObservers()
+    }
+
+    func unregister(side: Side) {
+        switch side {
+        case .left: leftPane = nil
+        case .right: rightPane = nil
+        }
+        reattachObservers()
+    }
+
+    private func pane(for side: Side) -> Pane? {
+        side == .left ? leftPane : rightPane
+    }
+
+    // MARK: 观察者
+
+    /// 只有两侧都注册且都拿到 scrollView 才挂观察者;任一缺失先撤下,等下次注册/刷新补齐。
+    private func reattachObservers() {
+        detachObservers()
+        guard let leftPane, let rightPane,
+              leftPane.scrollView != nil, rightPane.scrollView != nil else { return }
+        attach(pane: leftPane, side: .left)
+        attach(pane: rightPane, side: .right)
+    }
+
+    private func attach(pane: Pane, side: Side) {
+        pane.refreshScrollView()
+        guard let clipView = pane.scrollView?.contentView else { return }
+        let observer = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clipView,
+            queue: .main
+        ) { [weak self] _ in
+            self?.scrollChanged(from: side)
+        }
+        observers.append(observer)
+    }
+
+    private func detachObservers() {
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        observers.removeAll()
+    }
+
+    deinit {
+        detachObservers()
+    }
+
+    // MARK: 同步逻辑(一比一保留)
+
+    private func scrollChanged(from side: Side) {
+        guard !isSyncing,
+              let leftPane,
+              let rightPane else { return }
+
+        let source = side == .left ? leftPane : rightPane
+        let target = side == .left ? rightPane : leftPane
+        source.refreshScrollView()
+        target.refreshScrollView()
+
+        guard let sourceScroll = source.scrollView,
+              let targetScroll = target.scrollView else { return }
+
+        // 回声判定:该侧位置仍停留在上次程序化设置的值,说明是 setBoundsOrigin/go(to:)
+        // 的迟到通知(被动滚动),丢弃,不反向同步。
+        let sourceOffset = sourceScroll.contentView.bounds.origin.y
+        if let programmed = lastSetOffset[side],
+           abs(programmed - sourceOffset) < Self.offsetTolerance {
+            return
+        }
+        lastSetOffset[side] = nil   // 位置已偏离记录值:确认是真实用户滚动
+
+        isSyncing = true
+        defer { isSyncing = false }
+
+        let didMove: Bool
+        if let sourcePDF = source.pdfView,
+           let targetPDF = target.pdfView,
+           let sourcePageCount = source.pageCount,
+           let targetPageCount = target.pageCount,
+           sourcePageCount > 0,
+           sourcePageCount == targetPageCount {
+            // 精确模式:页数相同的两 PDF 走页锚点几何同步。
+            didMove = Self.syncPageAnchored(from: sourcePDF, to: targetPDF)
+        } else {
+            // 兜底:按屏绝对映射。目标位置是源位置的纯函数,不累加,长距离不漂移。
+            let sourceViewport = sourceScroll.contentView.bounds.height
+            if sourceViewport > 0 {
+                let sourceScreens = Double(sourceOffset) / Double(sourceViewport)
+                let targetScreens = side == .left
+                    ? math.targetScreens(fromA: sourceScreens)
+                    : math.targetScreens(fromB: sourceScreens)
+                didMove = Self.applyAbsoluteScreens(targetScreens, to: targetScroll)
+            } else {
+                didMove = false
+            }
+        }
+
+        if didMove {
+            let targetSide: Side = side == .left ? .right : .left
+            let targetOffset = targetScroll.contentView.bounds.origin.y
+            lastSetOffset[targetSide] = targetOffset
+        }
+    }
+
+    /// 视口顶边锚点:落在哪一页、页内(自页顶起)的比例位置。全部取自 PDFView 真实页面几何。
+    private struct PageAnchor {
+        var pageIndex: Int
+        var fractionFromTop: Double
+    }
+
+    private static func viewportTopAnchor(of pdfView: PDFView) -> PageAnchor? {
+        guard let document = pdfView.document else { return nil }
+        let bounds = pdfView.bounds
+        guard bounds.height > 0 else { return nil }
+        let topY = pdfView.isFlipped ? bounds.minY + 1 : bounds.maxY - 1
+        let topPoint = NSPoint(x: bounds.midX, y: topY)
+        guard let page = pdfView.page(for: topPoint, nearest: true) else { return nil }
+        let pagePoint = pdfView.convert(topPoint, to: page)
+        let pageBounds = page.bounds(for: pdfView.displayBox)
+        guard pageBounds.height > 0 else { return nil }
+        let fraction = Double((pageBounds.maxY - pagePoint.y) / pageBounds.height)
+        return PageAnchor(
+            pageIndex: document.index(for: page),
+            fractionFromTop: min(max(fraction, 0), 1)
         )
     }
 
-    static func dismantleNSView(_ splitView: NSSplitView, coordinator: Coordinator) {
-        coordinator.detachObservers()
+    /// 页锚点同步(两侧均为 PDF 且页数相同)。全程不经均匀页高折算,页高不均也不跳页。
+    /// 返回是否真正移动了目标(已在期望位置邻域内则不动,天然断开互踢环路)。
+    private static func syncPageAnchored(from sourcePDF: PDFView, to targetPDF: PDFView) -> Bool {
+        guard let anchor = viewportTopAnchor(of: sourcePDF),
+              let targetDocument = targetPDF.document,
+              let targetPage = targetDocument.page(at: anchor.pageIndex) else { return false }
+
+        // 收敛截断:目标侧已停在同页同位置,不再设置。
+        if let current = viewportTopAnchor(of: targetPDF),
+           current.pageIndex == anchor.pageIndex,
+           abs(current.fractionFromTop - anchor.fractionFromTop) < inPageTolerance {
+            return false
+        }
+
+        let pageBounds = targetPage.bounds(for: targetPDF.displayBox)
+        let destY = pageBounds.maxY - CGFloat(anchor.fractionFromTop) * pageBounds.height
+        let destination = PDFDestination(
+            page: targetPage,
+            at: NSPoint(x: pageBounds.minX, y: destY)
+        )
+        targetPDF.go(to: destination)
+        return true
     }
 
-    final class Coordinator {
-        private enum Side {
-            case left
-            case right
-        }
+    /// 按屏绝对映射滚动目标侧:targetScreens 屏 × 目标视口高度 = 目标绝对偏移,截断后直接定位。
+    /// 已在目标 ε 邻域内则不动(收敛截断,断开互踢环路)。返回是否真正移动。
+    @discardableResult
+    private static func applyAbsoluteScreens(_ targetScreens: Double, to scrollView: NSScrollView) -> Bool {
+        let visible = scrollView.contentView.bounds
+        let documentHeight = scrollView.documentView?.bounds.height ?? 0
+        let maxOffset = documentHeight - visible.height
+        guard maxOffset > 0, visible.height > 0, targetScreens.isFinite else { return false }
 
-        private final class Pane {
-            let view: NSView
-            weak var scrollView: NSScrollView?
-            weak var pdfView: PDFView?
-
-            init(view: NSView, scrollView: NSScrollView?, pdfView: PDFView?) {
-                self.view = view
-                self.scrollView = scrollView
-                self.pdfView = pdfView
-            }
-
-            var pageCount: Int? {
-                pdfView?.document?.pageCount
-            }
-
-            func refreshScrollView() {
-                if scrollView == nil {
-                    scrollView = Coordinator.findScrollView(in: view)
-                }
-                scrollView?.contentView.postsBoundsChangedNotifications = true
-            }
-        }
-
-        /// 分隔条委托:加宽命中区、约束两侧最小宽度,让 .paneSplitter 分隔条真正可抓可拖。
-        let splitDelegate = SplitDelegate()
-
-        private var signature: String?
-        private var leftPane: Pane?
-        private var rightPane: Pane?
-        private var observers: [NSObjectProtocol] = []
-        private var math = ScrollSyncMath(ratioA: 1, ratioB: 1)
-        /// 同步守卫:仅在程序化设置对侧位置的同步调用栈内为 true,阻断同步派发的通知。
-        private var isSyncing = false
-        /// 各侧最近一次被程序化设置后的滚动偏移。迟到的 boundsDidChange 通知若仍停在该值,
-        /// 判定为回声(被动滚动),不是用户滚动,直接丢弃——这是防互踢环路的主防线。
-        private var lastSetOffset: [Side: CGFloat] = [:]
-
-        /// 偏移比较容差(pt):小于一个滚轮刻度,既能吸收浮点/布局微调,又不会吞掉真实滚动。
-        private static let offsetTolerance: CGFloat = 2.0
-        /// 页内位置容差(页高的千分之二,A4 渲染下约 1–2pt):目标已在期望位置邻域内就不再设置。
-        private static let inPageTolerance = 0.002
-
-        func update(
-            _ splitView: NSSplitView,
-            left: ViewerDocument,
-            right: ViewerDocument?,
-            ratioA: Double,
-            ratioB: Double
-        ) {
-            math = ScrollSyncMath(ratioA: ratioA, ratioB: ratioB)
-
-            let newSignature = "\(left.id)|\(right?.id ?? "nil")"
-            guard newSignature != signature else { return }
-            signature = newSignature
-
-            detachObservers()
-            lastSetOffset.removeAll()
-            splitView.subviews.forEach { $0.removeFromSuperview() }
-
-            let newLeftPane = makePane(for: left)
-            leftPane = newLeftPane
-            splitView.addSubview(newLeftPane.view)
-
-            if let right {
-                let newRightPane = makePane(for: right)
-                rightPane = newRightPane
-                splitView.addSubview(newRightPane.view)
-            } else {
-                rightPane = nil
-            }
-
-            splitView.adjustSubviews()
-            // 首次定位:仅在已布局(宽度 > 0)时把分隔条放到目标比例;
-            // NSViewRepresentable 首帧 updateNSView 常在布局前(bounds 为 0),
-            // 此时 setPosition(0, ...) 会把分隔条钉死在 0、再被最小栏宽约束顶死 → 右栏塌成 0。
-            positionDividerIfPossible(splitView)
-            attachObservers()
-
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                // 布局通常已完成:此时再按真实宽度定位一次,吸收首帧宽度为 0 的情况。
-                self.positionDividerIfPossible(splitView)
-                self.attachObservers()
-            }
-        }
-
-        /// 目标分隔比例(左栏占比),默认对半分。
-        private let targetSplitRatio: CGFloat = 0.5
-
-        /// 只有当 split view 已布局(宽度 > 0)才设置分隔条位置,否则跳过(留给后续 layout/async 再定位)。
-        private func positionDividerIfPossible(_ splitView: NSSplitView) {
-            guard splitView.subviews.count == 2 else { return }
-            let width = splitView.bounds.width
-            guard width > 0 else { return }
-            splitView.setPosition(width * targetSplitRatio, ofDividerAt: 0)
-        }
-
-        func detachObservers() {
-            for observer in observers {
-                NotificationCenter.default.removeObserver(observer)
-            }
-            observers.removeAll()
-        }
-
-        private func attachObservers() {
-            detachObservers()
-            guard let leftPane, let rightPane else { return }
-            register(pane: leftPane, side: .left)
-            register(pane: rightPane, side: .right)
-        }
-
-        private func register(pane: Pane, side: Side) {
-            pane.refreshScrollView()
-            guard let clipView = pane.scrollView?.contentView else { return }
-
-            let observer = NotificationCenter.default.addObserver(
-                forName: NSView.boundsDidChangeNotification,
-                object: clipView,
-                queue: .main
-            ) { [weak self] _ in
-                self?.scrollChanged(from: side)
-            }
-            observers.append(observer)
-        }
-
-        private func scrollChanged(from side: Side) {
-            guard !isSyncing,
-                  let leftPane,
-                  let rightPane else { return }
-
-            let source = side == .left ? leftPane : rightPane
-            let target = side == .left ? rightPane : leftPane
-            source.refreshScrollView()
-            target.refreshScrollView()
-
-            guard let sourceScroll = source.scrollView,
-                  let targetScroll = target.scrollView else { return }
-
-            // 回声判定:该侧位置仍停留在上次程序化设置的值,说明这是 setBoundsOrigin/go(to:)
-            // 的迟到通知(被动滚动),不是用户滚动,直接丢弃,不再反向同步。
-            let sourceOffset = sourceScroll.contentView.bounds.origin.y
-            if let programmed = lastSetOffset[side],
-               abs(programmed - sourceOffset) < Self.offsetTolerance {
-                return
-            }
-            lastSetOffset[side] = nil   // 位置已偏离记录值:确认是真实用户滚动
-
-            isSyncing = true
-            defer { isSyncing = false }
-
-            let didMove: Bool
-            if let sourcePDF = source.pdfView,
-               let targetPDF = target.pdfView,
-               let sourcePageCount = source.pageCount,
-               let targetPageCount = target.pageCount,
-               sourcePageCount > 0,
-               sourcePageCount == targetPageCount {
-                // 精确模式:页数相同的两 PDF 走页锚点几何同步(不变)。
-                didMove = Self.syncPageAnchored(from: sourcePDF, to: targetPDF)
-            } else {
-                // 兜底:按屏绝对映射。目标位置是源位置的纯函数,不累加,长距离滚动不漂移。
-                // 源侧"距顶屏数" = 源偏移 / 源视口高度(用视口高度归一化,非总可滚动高度);
-                // 乘比例系数后 × 目标视口高度 = 目标绝对偏移,截断后直接定位。
-                let sourceViewport = sourceScroll.contentView.bounds.height
-                if sourceViewport > 0 {
-                    let sourceScreens = Double(sourceOffset) / Double(sourceViewport)
-                    let targetScreens = side == .left
-                        ? math.targetScreens(fromA: sourceScreens)
-                        : math.targetScreens(fromB: sourceScreens)
-                    didMove = Self.applyAbsoluteScreens(targetScreens, to: targetScroll)
-                } else {
-                    didMove = false
-                }
-            }
-
-            if didMove {
-                let targetSide: Side = side == .left ? .right : .left
-                let targetOffset = targetScroll.contentView.bounds.origin.y
-                lastSetOffset[targetSide] = targetOffset
-            }
-        }
-
-        /// 视口顶边锚点:落在哪一页、页内(自页顶起)的比例位置。全部取自 PDFView 真实页面几何。
-        private struct PageAnchor {
-            var pageIndex: Int
-            var fractionFromTop: Double   // 0 = 页顶,1 = 页底
-        }
-
-        private static func viewportTopAnchor(of pdfView: PDFView) -> PageAnchor? {
-            guard let document = pdfView.document else { return nil }
-            let bounds = pdfView.bounds
-            guard bounds.height > 0 else { return nil }
-            let topY = pdfView.isFlipped ? bounds.minY + 1 : bounds.maxY - 1
-            let topPoint = NSPoint(x: bounds.midX, y: topY)
-            guard let page = pdfView.page(for: topPoint, nearest: true) else { return nil }
-            let pagePoint = pdfView.convert(topPoint, to: page)
-            let pageBounds = page.bounds(for: pdfView.displayBox)
-            guard pageBounds.height > 0 else { return nil }
-            let fraction = Double((pageBounds.maxY - pagePoint.y) / pageBounds.height)
-            return PageAnchor(
-                pageIndex: document.index(for: page),
-                fractionFromTop: min(max(fraction, 0), 1)
-            )
-        }
-
-        /// 页锚点同步(两侧均为 PDF 且页数相同):源侧按视口几何求"顶边所在页 + 页内比例",
-        /// 目标侧用其文档同一页的真实 bounds 换算出目的点,经 PDFDestination 定位。
-        /// 全程不经过"均匀页高"的全局进度折算,页高不均/页面尺寸不同也不会跳页。
-        /// 返回是否真正移动了目标(已在期望位置邻域内则不动,天然断开互踢环路)。
-        private static func syncPageAnchored(from sourcePDF: PDFView, to targetPDF: PDFView) -> Bool {
-            guard let anchor = viewportTopAnchor(of: sourcePDF),
-                  let targetDocument = targetPDF.document,
-                  let targetPage = targetDocument.page(at: anchor.pageIndex) else { return false }
-
-            // 收敛截断:目标侧已停在同页同位置,不再设置。
-            if let current = viewportTopAnchor(of: targetPDF),
-               current.pageIndex == anchor.pageIndex,
-               abs(current.fractionFromTop - anchor.fractionFromTop) < inPageTolerance {
-                return false
-            }
-
-            let pageBounds = targetPage.bounds(for: targetPDF.displayBox)
-            let destY = pageBounds.maxY - CGFloat(anchor.fractionFromTop) * pageBounds.height
-            let destination = PDFDestination(
-                page: targetPage,
-                at: NSPoint(x: pageBounds.minX, y: destY)
-            )
-            targetPDF.go(to: destination)
-            return true
-        }
-
-        private func makePane(for document: ViewerDocument) -> Pane {
-            switch document.kind {
-            case .pdf:
-                return makePDFPane(for: document)
-            case .text:
-                return makeTextPane(for: document)
-            case .unsupported:
-                return makeMessagePane(L10n.t("viewer.unsupported"))
-            }
-        }
-
-        private func makePDFPane(for document: ViewerDocument) -> Pane {
-            guard let pdfDocument = try? PDFTextExtractor.openDocument(at: document.url, password: document.password) else {
-                return makeMessagePane(L10n.t("viewer.openFailed"))
-            }
-
-            let pdfView = PDFView()
-            pdfView.document = pdfDocument
-            pdfView.displayMode = .singlePageContinuous
-            pdfView.displayDirection = .vertical
-            pdfView.displaysPageBreaks = true
-            pdfView.autoScales = true
-            pdfView.backgroundColor = .textBackgroundColor
-            pdfView.layoutDocumentView()
-
-            return Pane(
-                view: pdfView,
-                scrollView: Self.findScrollView(in: pdfView),
-                pdfView: pdfView
-            )
-        }
-
-        private func makeTextPane(for document: ViewerDocument) -> Pane {
-            let scrollView = NSScrollView()
-            scrollView.hasVerticalScroller = true
-            scrollView.hasHorizontalScroller = false
-            scrollView.borderType = .noBorder
-            scrollView.drawsBackground = true
-            scrollView.backgroundColor = .textBackgroundColor
-
-            let textView = NSTextView()
-            textView.isEditable = false
-            textView.isSelectable = true
-            textView.isRichText = false
-            textView.importsGraphics = false
-            textView.font = .systemFont(ofSize: 14)
-            textView.textColor = .labelColor
-            textView.backgroundColor = .textBackgroundColor
-            textView.textContainerInset = NSSize(width: 24, height: 24)
-            textView.isHorizontallyResizable = false
-            textView.isVerticallyResizable = true
-            textView.autoresizingMask = [.width]
-            textView.minSize = NSSize(width: 0, height: scrollView.contentSize.height)
-            textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-            textView.textContainer?.containerSize = NSSize(
-                width: scrollView.contentSize.width,
-                height: CGFloat.greatestFiniteMagnitude
-            )
-            textView.textContainer?.widthTracksTextView = true
-            textView.string = ViewerTextLoader.load(from: document.url) ?? L10n.t("viewer.openFailed")
-
-            scrollView.documentView = textView
-            return Pane(view: scrollView, scrollView: scrollView, pdfView: nil)
-        }
-
-        private func makeMessagePane(_ message: String) -> Pane {
-            let container = NSView()
-            let label = NSTextField(wrappingLabelWithString: message)
-            label.alignment = .center
-            label.textColor = .secondaryLabelColor
-            label.translatesAutoresizingMaskIntoConstraints = false
-            container.addSubview(label)
-
-            NSLayoutConstraint.activate([
-                label.centerXAnchor.constraint(equalTo: container.centerXAnchor),
-                label.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-                label.leadingAnchor.constraint(greaterThanOrEqualTo: container.leadingAnchor, constant: 24),
-                label.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -24),
-            ])
-
-            return Pane(view: container, scrollView: nil, pdfView: nil)
-        }
-
-        /// 按屏绝对映射滚动目标侧:targetScreens 屏 × 目标视口高度 = 目标绝对偏移,
-        /// 截断到 [0, maxOffset] 后直接定位(无状态纯函数,不叠加当前偏移,长距离不漂移)。
-        /// 已在目标 ε 邻域内则不动(收敛截断,断开互踢环路;目标触顶/触底后自然停下)。
-        /// 返回是否真正移动。
-        @discardableResult
-        private static func applyAbsoluteScreens(_ targetScreens: Double, to scrollView: NSScrollView) -> Bool {
-            let visible = scrollView.contentView.bounds
-            let documentHeight = scrollView.documentView?.bounds.height ?? 0
-            let maxOffset = documentHeight - visible.height
-            guard maxOffset > 0, visible.height > 0, targetScreens.isFinite else { return false }
-
-            let targetY = min(max(CGFloat(targetScreens) * visible.height, 0), maxOffset)
-            guard abs(targetY - visible.origin.y) >= offsetTolerance else { return false }
-            scrollView.contentView.setBoundsOrigin(NSPoint(x: visible.origin.x, y: targetY))
-            scrollView.reflectScrolledClipView(scrollView.contentView)
-            return true
-        }
-
-        private static func findScrollView(in view: NSView) -> NSScrollView? {
-            if let scrollView = view as? NSScrollView {
-                return scrollView
-            }
-            for subview in view.subviews {
-                if let found = findScrollView(in: subview) {
-                    return found
-                }
-            }
-            return nil
-        }
+        let targetY = min(max(CGFloat(targetScreens) * visible.height, 0), maxOffset)
+        guard abs(targetY - visible.origin.y) >= offsetTolerance else { return false }
+        scrollView.contentView.setBoundsOrigin(NSPoint(x: visible.origin.x, y: targetY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        return true
     }
 
-    /// 仿 Claude Desktop 的分隔条:加宽分隔条厚度,把手默认隐藏,仅在 hover/拖动时显示,
-    /// 并给出三态视觉(hover 淡灰、press 亮色)+ 系统 tooltip。
-    final class HandleSplitView: NSSplitView, NSViewToolTipOwner {
-        private static let thickness: CGFloat = 10
-        private static let handleWidth: CGFloat = 6
-        private static let handleHeight: CGFloat = 64
-        /// tracking / tooltip 命中区在分隔条矩形基础上左右各扩的余量(与 SplitDelegate.hitSlop 一致)。
-        private static let hitSlop: CGFloat = 4
-
-        private var isHovering = false
-        private var isDragging = false
-        private var handleTrackingArea: NSTrackingArea?
-
-        override var dividerThickness: CGFloat { Self.thickness }
-
-        override func drawDivider(in rect: NSRect) {
-            // 默认态(既非 hover 也非拖动):不画把手,分隔条保持透明。
-            guard isHovering || isDragging else { return }
-
-            let handle = NSRect(
-                x: rect.midX - Self.handleWidth / 2,
-                y: rect.midY - Self.handleHeight / 2,
-                width: Self.handleWidth,
-                height: Self.handleHeight
-            )
-            let radius = Self.handleWidth / 2
-            // press/拖动中用比 hover 明显一档的亮色;hover 用淡灰。
-            let color: NSColor = isDragging ? .secondaryLabelColor : .tertiaryLabelColor
-            color.setFill()
-            NSBezierPath(roundedRect: handle, xRadius: radius, yRadius: radius).fill()
+    static func findScrollView(in view: NSView) -> NSScrollView? {
+        if let scrollView = view as? NSScrollView {
+            return scrollView
         }
-
-        /// 当前分隔条矩形(仅两栏时有意义):左栏右边界起、宽 dividerThickness、全高。
-        private func dividerRect() -> NSRect? {
-            guard subviews.count == 2 else { return nil }
-            let x = subviews[0].frame.maxX
-            return NSRect(x: x, y: bounds.minY, width: dividerThickness, height: bounds.height)
-        }
-
-        // 分隔条初始居中(Coordinator 异步 setPosition)与拖动都会移动分隔条,但不一定触发
-        // updateTrackingAreas;子视图每次重新布局都经这里,借此把 tracking/tooltip 矩形同步到分隔条新位置。
-        override func resizeSubviews(withOldSize oldSize: NSSize) {
-            super.resizeSubviews(withOldSize: oldSize)
-            updateTrackingAreas()
-        }
-
-        override func updateTrackingAreas() {
-            super.updateTrackingAreas()
-
-            // 分隔条位置随拖动/窗口 resize 变化,布局变化时 AppKit 会调此方法:先移旧再按当前 rect 重建。
-            if let existing = handleTrackingArea {
-                removeTrackingArea(existing)
-                handleTrackingArea = nil
-            }
-            removeAllToolTips()
-
-            guard let rect = dividerRect() else { return }
-            let hitRect = rect.insetBy(dx: -Self.hitSlop, dy: 0)
-
-            // 光标与 hover 用同一个 tracking area:.cursorUpdate 触发 cursorUpdate(with:) 设左右拖动光标。
-            // (旧的 cursorRects 方案会被 NSSplitView 自带分隔条光标 + 滚动时子视图刷新冲掉,时灵时不灵。)
-            let area = NSTrackingArea(
-                rect: hitRect,
-                options: [.mouseEnteredAndExited, .cursorUpdate, .activeInKeyWindow],
-                owner: self,
-                userInfo: nil
-            )
-            addTrackingArea(area)
-            handleTrackingArea = area
-
-            addToolTip(hitRect, owner: self, userData: nil)
-        }
-
-        override func cursorUpdate(with event: NSEvent) {
-            NSCursor.resizeLeftRight.set()
-        }
-
-        override func mouseEntered(with event: NSEvent) {
-            isHovering = true
-            needsDisplay = true
-        }
-
-        override func mouseExited(with event: NSEvent) {
-            isHovering = false
-            needsDisplay = true
-        }
-
-        override func mouseDown(with event: NSEvent) {
-            // 仅当点落在分隔条命中区内时才进入 press 态,避免点在别处时把手闪一下亮色。
-            let point = convert(event.locationInWindow, from: nil)
-            let onDivider = dividerRect().map { $0.insetBy(dx: -Self.hitSlop, dy: 0).contains(point) } ?? false
-
-            if onDivider {
-                isDragging = true
-                needsDisplay = true
-            }
-            // NSSplitView 分隔条拖动是模态跟踪循环,期间 drawDivider 会随分隔条移动被反复调用,读到亮色。
-            super.mouseDown(with: event)
-            if onDivider {
-                isDragging = false
-                needsDisplay = true
-                // 分隔条已移动,刷新命中区(tracking + tooltip)。
-                updateTrackingAreas()
+        for subview in view.subviews {
+            if let found = findScrollView(in: subview) {
+                return found
             }
         }
-
-        func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
-            L10n.t("viewer.divider.resize")
-        }
-    }
-
-    /// 让细分隔条真正可抓:把命中区加宽到 ±hitSlop,并约束两侧最小宽度。
-    final class SplitDelegate: NSObject, NSSplitViewDelegate {
-        private static let minPaneWidth: CGFloat = 200
-        private static let hitSlop: CGFloat = 4
-
-        func splitView(_ splitView: NSSplitView, effectiveRect proposedEffectiveRect: NSRect, forDrawnRect drawnRect: NSRect, ofDividerAt dividerIndex: Int) -> NSRect {
-            proposedEffectiveRect.insetBy(dx: -Self.hitSlop, dy: 0)
-        }
-
-        func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-            // 放不下两个最小栏时不强加约束(否则 min 与 max 冲突会把某栏顶成 0、钉死分隔条)。
-            guard splitView.bounds.width >= 2 * Self.minPaneWidth else { return proposedMinimumPosition }
-            return max(proposedMinimumPosition, Self.minPaneWidth)
-        }
-
-        func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-            guard splitView.bounds.width >= 2 * Self.minPaneWidth else { return proposedMaximumPosition }
-            return min(proposedMaximumPosition, splitView.bounds.width - Self.minPaneWidth)
-        }
+        return nil
     }
 }

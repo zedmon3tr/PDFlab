@@ -121,7 +121,7 @@ struct ViewerView: View {
             switch effectiveLayout {
             case .sideBySide:
                 if let secondary {
-                    DualPaneController(left: primary, right: secondary, ratioA: ratioA, ratioB: ratioB)
+                    DualPaneView(left: primary, right: secondary, ratioA: ratioA, ratioB: ratioB)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     SingleDocumentView(document: primary)

@@ -4,9 +4,9 @@
 /// 源侧 `screens` 个视口屏 → 目标侧 `screens × 系数` 个视口屏。
 /// A 为源时系数为 `ratioA / ratioB`,B 为源时为 `ratioB / ratioA`(互逆)。
 /// 100%/100% 时一屏对一屏,无论文档长短——避免"总进度比例"下短文档滚一点长文档冲一大截。
-/// 当前 DualPaneController 用绝对映射(距顶屏数 × 系数 = 目标距顶屏数),消除长距离累积漂移。
+/// 当前 DualPaneView 用绝对映射(距顶屏数 × 系数 = 目标距顶屏数),消除长距离累积漂移。
 ///
-/// 两侧均为 PDF 且页数相同时,App 层(DualPaneController)直接用 PDFKit 页面几何做页锚点同步,
+/// 两侧均为 PDF 且页数相同时,App 层(DualPaneView)直接用 PDFKit 页面几何做页锚点同步,
 /// 不再经过本类——原 `pageAnchored(page:inPage:pageCount:)` 与 `targetProgress` 均已废弃移除。
 public struct ScrollSyncMath: Sendable {
     public let ratioA: Double
