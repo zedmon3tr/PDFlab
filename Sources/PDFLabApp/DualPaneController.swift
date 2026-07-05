@@ -157,14 +157,29 @@ struct DualPaneController: NSViewRepresentable {
             }
 
             splitView.adjustSubviews()
-            if splitView.subviews.count == 2 {
-                splitView.setPosition(splitView.bounds.width / 2, ofDividerAt: 0)
-            }
+            // 首次定位:仅在已布局(宽度 > 0)时把分隔条放到目标比例;
+            // NSViewRepresentable 首帧 updateNSView 常在布局前(bounds 为 0),
+            // 此时 setPosition(0, ...) 会把分隔条钉死在 0、再被最小栏宽约束顶死 → 右栏塌成 0。
+            positionDividerIfPossible(splitView)
             attachObservers()
 
             DispatchQueue.main.async { [weak self] in
-                self?.attachObservers()
+                guard let self else { return }
+                // 布局通常已完成:此时再按真实宽度定位一次,吸收首帧宽度为 0 的情况。
+                self.positionDividerIfPossible(splitView)
+                self.attachObservers()
             }
+        }
+
+        /// 目标分隔比例(左栏占比),默认对半分。
+        private let targetSplitRatio: CGFloat = 0.5
+
+        /// 只有当 split view 已布局(宽度 > 0)才设置分隔条位置,否则跳过(留给后续 layout/async 再定位)。
+        private func positionDividerIfPossible(_ splitView: NSSplitView) {
+            guard splitView.subviews.count == 2 else { return }
+            let width = splitView.bounds.width
+            guard width > 0 else { return }
+            splitView.setPosition(width * targetSplitRatio, ofDividerAt: 0)
         }
 
         func detachObservers() {
@@ -432,11 +447,14 @@ struct DualPaneController: NSViewRepresentable {
         }
 
         func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-            max(proposedMinimumPosition, Self.minPaneWidth)
+            // 放不下两个最小栏时不强加约束(否则 min 与 max 冲突会把某栏顶成 0、钉死分隔条)。
+            guard splitView.bounds.width >= 2 * Self.minPaneWidth else { return proposedMinimumPosition }
+            return max(proposedMinimumPosition, Self.minPaneWidth)
         }
 
         func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
-            min(proposedMaximumPosition, splitView.bounds.width - Self.minPaneWidth)
+            guard splitView.bounds.width >= 2 * Self.minPaneWidth else { return proposedMaximumPosition }
+            return min(proposedMaximumPosition, splitView.bounds.width - Self.minPaneWidth)
         }
     }
 }

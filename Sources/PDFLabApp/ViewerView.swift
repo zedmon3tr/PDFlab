@@ -19,6 +19,7 @@ struct ViewerView: View {
     @State private var didLoad = false
     @State private var primary: ViewerDocument?
     @State private var secondary: ViewerDocument?
+    @State private var layout: ViewerLayout = .single(.primary)
     @State private var ratioA = 1.0
     @State private var ratioB = 1.0
     @State private var alert: ViewerAlert?
@@ -47,7 +48,7 @@ struct ViewerView: View {
             .navigationTitle(primary?.title ?? url.lastPathComponent)
             .toolbar {
                 ToolbarItemGroup {
-                    if secondary != nil {
+                    if secondary != nil, layout == .sideBySide {
                         ratioControl(L10n.t("viewer.leftRatio"), value: $ratioA)
                         ratioControl(L10n.t("viewer.rightRatio"), value: $ratioB)
                         resetRatioButton
@@ -97,13 +98,39 @@ struct ViewerView: View {
             }
     }
 
+    /// 有效布局:处理边界(secondary 缺失时任何指向 secondary 的布局都退回单看 primary)。
+    private var effectiveLayout: ViewerLayout {
+        switch layout {
+        case .sideBySide where secondary == nil:
+            return .single(.primary)
+        case .single(.secondary) where secondary == nil:
+            return .single(.primary)
+        default:
+            return layout
+        }
+    }
+
     @ViewBuilder
     private var viewerContent: some View {
         if let primary {
-            if let secondary {
-                DualPaneController(left: primary, right: secondary, ratioA: ratioA, ratioB: ratioB)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
+            switch effectiveLayout {
+            case .sideBySide:
+                if let secondary {
+                    DualPaneController(left: primary, right: secondary, ratioA: ratioA, ratioB: ratioB)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    SingleDocumentView(document: primary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            case .single(.secondary):
+                if let secondary {
+                    SingleDocumentView(document: secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    SingleDocumentView(document: primary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            case .single(.primary):
                 SingleDocumentView(document: primary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -120,10 +147,24 @@ struct ViewerView: View {
     private var documentTabBar: some View {
         HStack(spacing: 6) {
             if let primary {
-                documentTab(title: primary.title) { closePrimary() }
+                documentTab(
+                    title: primary.title,
+                    isActive: isTabActive(.primary),
+                    onFocus: { focus(.primary) },
+                    onCloseTab: { closePrimary() }
+                )
             }
             if let secondary {
-                documentTab(title: secondary.title) { closeSecondary() }
+                documentTab(
+                    title: secondary.title,
+                    isActive: isTabActive(.secondary),
+                    onFocus: { focus(.secondary) },
+                    onCloseTab: { closeSecondary() }
+                )
+            }
+            // 两个文档都打开时提供并排/分栏开关。
+            if primary != nil, secondary != nil {
+                sideBySideToggle
             }
             // 已开 2 个文档时隐藏 "+"(最多 2 个)。
             if primary == nil || secondary == nil {
@@ -143,13 +184,52 @@ struct ViewerView: View {
         .background(.quaternary.opacity(0.35))
     }
 
-    private func documentTab(title: String, onCloseTab: @escaping () -> Void) -> some View {
+    /// 单看 ↔ 并排开关:并排模式下呈激活态。
+    private var sideBySideToggle: some View {
+        Button {
+            layout = .sideBySide
+        } label: {
+            Image(systemName: effectiveLayout == .sideBySide ? "rectangle.split.2x1.fill" : "rectangle.split.2x1")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(effectiveLayout == .sideBySide ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+        }
+        .buttonStyle(HoverButtonStyle(variant: .toolbar))
+        .help(L10n.t("viewer.sideBySide"))
+    }
+
+    /// 标签是否处于激活态:sideBySide 下两侧都算激活;single 下仅被聚焦的一侧激活。
+    private func isTabActive(_ side: ViewerSide) -> Bool {
+        switch effectiveLayout {
+        case .sideBySide:
+            return true
+        case .single(let focused):
+            return focused == side
+        }
+    }
+
+    private func focus(_ side: ViewerSide) {
+        layout = .single(side)
+    }
+
+    private func documentTab(
+        title: String,
+        isActive: Bool,
+        onFocus: @escaping () -> Void,
+        onCloseTab: @escaping () -> Void
+    ) -> some View {
         HStack(spacing: 6) {
-            Text(title)
-                .font(.callout)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: 220, alignment: .leading)
+            // 标签主体可点 → 聚焦该侧。
+            Button(action: onFocus) {
+                Text(title)
+                    .font(.callout)
+                    .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 220, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // × 关闭按钮独立,点击不穿透到聚焦。
             Button(action: onCloseTab) {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .bold))
@@ -159,16 +239,20 @@ struct ViewerView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(.background, in: RoundedRectangle(cornerRadius: 7))
+        .background(
+            (isActive ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.18) : Color(nsColor: .windowBackgroundColor)),
+            in: RoundedRectangle(cornerRadius: 7)
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 7)
-                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+                .strokeBorder(Color.primary.opacity(isActive ? 0.16 : 0.08), lineWidth: 1)
         )
     }
 
     // 关闭 secondary:回到 primary 单文档。
     private func closeSecondary() {
         secondary = nil
+        layout = .single(.primary)
         ratioA = 1.0
         ratioB = 1.0
     }
@@ -178,6 +262,7 @@ struct ViewerView: View {
         if let promoted = secondary {
             primary = promoted
             secondary = nil
+            layout = .single(.primary)
             ratioA = 1.0
             ratioB = 1.0
         } else {
@@ -284,6 +369,8 @@ struct ViewerView: View {
             ratioA = 1.0
             ratioB = 1.0
             secondary = document
+            // 加第二个文档的意图即对照:立即并排。
+            layout = .sideBySide
         }
     }
 
@@ -334,9 +421,15 @@ private struct TabCloseButtonStyle: ButtonStyle {
     }
 }
 
-private enum ViewerSide {
+private enum ViewerSide: Equatable {
     case primary
     case secondary
+}
+
+/// 查看器视图模式:single 聚焦单看某一侧,sideBySide 左右并排对照。
+private enum ViewerLayout: Equatable {
+    case single(ViewerSide)
+    case sideBySide
 }
 
 private struct PasswordRequest {

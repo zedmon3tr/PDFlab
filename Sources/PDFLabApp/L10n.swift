@@ -48,6 +48,7 @@ enum L10n {
         // 查看模块
         "viewer.addTab": ("再打开一个文档", "Open another document"),
         "viewer.closeTab": ("关闭", "Close"),
+        "viewer.sideBySide": ("并排对照", "Side by Side"),
         "viewer.leftRatio": ("左侧", "Left"),
         "viewer.rightRatio": ("右侧", "Right"),
         "viewer.resetRatio": ("重置两侧滚动比例为 100%", "Reset both scroll ratios to 100%"),
