@@ -53,7 +53,7 @@ struct DualPaneController: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSSplitView {
-        let splitView = NSSplitView()
+        let splitView = HandleSplitView()
         splitView.isVertical = true
         splitView.dividerStyle = .paneSplitter
         splitView.autoresizesSubviews = true
@@ -423,6 +423,29 @@ struct DualPaneController: NSViewRepresentable {
                 }
             }
             return nil
+        }
+    }
+
+    /// 仿 Claude Desktop 的分隔条:加宽分隔条厚度并在垂直居中画一段圆角竖条把手,
+    /// 让分隔条在视觉上可见、更易抓取(默认 .paneSplitter 太细几乎不可见)。
+    final class HandleSplitView: NSSplitView {
+        private static let thickness: CGFloat = 10
+        private static let handleWidth: CGFloat = 5
+        private static let handleHeight: CGFloat = 36
+
+        override var dividerThickness: CGFloat { Self.thickness }
+
+        override func drawDivider(in rect: NSRect) {
+            // 不铺背景,保持透明融入两侧内容;仅画居中把手。
+            let handle = NSRect(
+                x: rect.midX - Self.handleWidth / 2,
+                y: rect.midY - Self.handleHeight / 2,
+                width: Self.handleWidth,
+                height: Self.handleHeight
+            )
+            let radius = Self.handleWidth / 2
+            NSColor.tertiaryLabelColor.setFill()
+            NSBezierPath(roundedRect: handle, xRadius: radius, yRadius: radius).fill()
         }
     }
 
