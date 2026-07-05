@@ -20,6 +20,7 @@ struct ViewerView: View {
     @State private var primary: ViewerDocument?
     @State private var secondary: ViewerDocument?
     @State private var layout: ViewerLayout = .single(.primary)
+    @State private var lastFocusedSide: ViewerSide = .primary
     @State private var ratioA = 1.0
     @State private var ratioB = 1.0
     @State private var alert: ViewerAlert?
@@ -48,10 +49,14 @@ struct ViewerView: View {
             .navigationTitle(primary?.title ?? url.lastPathComponent)
             .toolbar {
                 ToolbarItemGroup {
-                    if secondary != nil, layout == .sideBySide {
+                    if secondary != nil, effectiveLayout == .sideBySide {
                         ratioControl(L10n.t("viewer.leftRatio"), value: $ratioA)
                         ratioControl(L10n.t("viewer.rightRatio"), value: $ratioB)
                         resetRatioButton
+                    }
+                    // 两文档打开时始终显示单看↔并排分段开关(用于随时切回并排)。
+                    if secondary != nil {
+                        viewModeToggle
                     }
                 }
             }
@@ -162,10 +167,6 @@ struct ViewerView: View {
                     onCloseTab: { closeSecondary() }
                 )
             }
-            // 两个文档都打开时提供并排/分栏开关。
-            if primary != nil, secondary != nil {
-                sideBySideToggle
-            }
             // 已开 2 个文档时隐藏 "+"(最多 2 个)。
             if primary == nil || secondary == nil {
                 Button {
@@ -184,19 +185,6 @@ struct ViewerView: View {
         .background(.quaternary.opacity(0.35))
     }
 
-    /// 单看 ↔ 并排开关:并排模式下呈激活态。
-    private var sideBySideToggle: some View {
-        Button {
-            layout = .sideBySide
-        } label: {
-            Image(systemName: effectiveLayout == .sideBySide ? "rectangle.split.2x1.fill" : "rectangle.split.2x1")
-                .font(.callout.weight(.medium))
-                .foregroundStyle(effectiveLayout == .sideBySide ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
-        }
-        .buttonStyle(HoverButtonStyle(variant: .toolbar))
-        .help(L10n.t("viewer.sideBySide"))
-    }
-
     /// 标签是否处于激活态:sideBySide 下两侧都算激活;single 下仅被聚焦的一侧激活。
     private func isTabActive(_ side: ViewerSide) -> Bool {
         switch effectiveLayout {
@@ -208,6 +196,7 @@ struct ViewerView: View {
     }
 
     private func focus(_ side: ViewerSide) {
+        lastFocusedSide = side
         layout = .single(side)
     }
 
@@ -229,6 +218,7 @@ struct ViewerView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .help(title)
             // × 关闭按钮独立,点击不穿透到聚焦。
             Button(action: onCloseTab) {
                 Image(systemName: "xmark")
@@ -270,6 +260,38 @@ struct ViewerView: View {
         }
     }
 
+    /// 单看 ↔ 并排分段开关(工具栏,仅两文档打开时显示)。
+    /// 选"并排" → sideBySide;选"单看" → 回到上次聚焦的一侧(默认 primary)。
+    private var viewModeToggle: some View {
+        Picker(L10n.t("viewer.viewMode"), selection: viewModeBinding) {
+            Image(systemName: "doc")
+                .help(L10n.t("viewer.modeSingle"))
+                .tag(ViewMode.single)
+            Image(systemName: "rectangle.split.2x1")
+                .help(L10n.t("viewer.modeSideBySide"))
+                .tag(ViewMode.sideBySide)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .help(L10n.t("viewer.viewMode"))
+    }
+
+    /// 分段开关当前值 ↔ layout 的绑定。当前值反映 effectiveLayout。
+    private var viewModeBinding: Binding<ViewMode> {
+        Binding(
+            get: { effectiveLayout == .sideBySide ? .sideBySide : .single },
+            set: { newValue in
+                switch newValue {
+                case .sideBySide:
+                    layout = .sideBySide
+                case .single:
+                    layout = .single(lastFocusedSide)
+                }
+            }
+        )
+    }
+
     // macOS 工具栏常不渲染 Stepper 的 label,数值必须用独立 Text 显式呈现。
     private func ratioControl(_ title: String, value: Binding<Double>) -> some View {
         HStack(spacing: 4) {
@@ -278,6 +300,7 @@ struct ViewerView: View {
                 .frame(minWidth: 72, alignment: .trailing)
             Stepper(title, value: value, in: 0.5...2.0, step: 0.1)
                 .labelsHidden()
+                .help(L10n.t("viewer.ratio.help"))
         }
     }
 
@@ -429,6 +452,12 @@ private enum ViewerSide: Equatable {
 /// 查看器视图模式:single 聚焦单看某一侧,sideBySide 左右并排对照。
 private enum ViewerLayout: Equatable {
     case single(ViewerSide)
+    case sideBySide
+}
+
+/// 工具栏分段开关的两段:单看 / 并排(不携带聚焦侧,切回单看时用 lastFocusedSide)。
+private enum ViewMode: Hashable {
+    case single
     case sideBySide
 }
 
