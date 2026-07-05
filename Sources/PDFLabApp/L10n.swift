@@ -56,6 +56,7 @@ enum L10n {
         "viewer.rightRatio": ("右侧", "Right"),
         "viewer.ratio.help": ("调节该侧滚动比例(50%–200%)", "Adjust this pane's scroll ratio (50%–200%)"),
         "viewer.resetRatio": ("重置两侧滚动比例为 100%", "Reset both scroll ratios to 100%"),
+        "viewer.divider.resize": ("拖动调整宽度", "Resize"),
         "viewer.unsupported": ("暂不支持该文件格式", "This file format is not supported"),
         "viewer.openFailed": ("打开失败", "Failed to open"),
         "viewer.noDocument": ("等待打开文档", "Waiting for a document"),

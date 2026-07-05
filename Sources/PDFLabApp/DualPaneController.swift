@@ -426,17 +426,25 @@ struct DualPaneController: NSViewRepresentable {
         }
     }
 
-    /// 仿 Claude Desktop 的分隔条:加宽分隔条厚度并在垂直居中画一段圆角竖条把手,
-    /// 让分隔条在视觉上可见、更易抓取(默认 .paneSplitter 太细几乎不可见)。
-    final class HandleSplitView: NSSplitView {
+    /// 仿 Claude Desktop 的分隔条:加宽分隔条厚度,把手默认隐藏,仅在 hover/拖动时显示,
+    /// 并给出三态视觉(hover 淡灰、press 亮色)+ 系统 tooltip。
+    final class HandleSplitView: NSSplitView, NSViewToolTipOwner {
         private static let thickness: CGFloat = 10
-        private static let handleWidth: CGFloat = 5
-        private static let handleHeight: CGFloat = 36
+        private static let handleWidth: CGFloat = 6
+        private static let handleHeight: CGFloat = 64
+        /// tracking / tooltip 命中区在分隔条矩形基础上左右各扩的余量(与 SplitDelegate.hitSlop 一致)。
+        private static let hitSlop: CGFloat = 4
+
+        private var isHovering = false
+        private var isDragging = false
+        private var handleTrackingArea: NSTrackingArea?
 
         override var dividerThickness: CGFloat { Self.thickness }
 
         override func drawDivider(in rect: NSRect) {
-            // 不铺背景,保持透明融入两侧内容;仅画居中把手。
+            // 默认态(既非 hover 也非拖动):不画把手,分隔条保持透明。
+            guard isHovering || isDragging else { return }
+
             let handle = NSRect(
                 x: rect.midX - Self.handleWidth / 2,
                 y: rect.midY - Self.handleHeight / 2,
@@ -444,8 +452,75 @@ struct DualPaneController: NSViewRepresentable {
                 height: Self.handleHeight
             )
             let radius = Self.handleWidth / 2
-            NSColor.tertiaryLabelColor.setFill()
+            // press/拖动中用比 hover 明显一档的亮色;hover 用淡灰。
+            let color: NSColor = isDragging ? .secondaryLabelColor : .tertiaryLabelColor
+            color.setFill()
             NSBezierPath(roundedRect: handle, xRadius: radius, yRadius: radius).fill()
+        }
+
+        /// 当前分隔条矩形(仅两栏时有意义):左栏右边界起、宽 dividerThickness、全高。
+        private func dividerRect() -> NSRect? {
+            guard subviews.count == 2 else { return nil }
+            let x = subviews[0].frame.maxX
+            return NSRect(x: x, y: bounds.minY, width: dividerThickness, height: bounds.height)
+        }
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+
+            // 分隔条位置随拖动/窗口 resize 变化,布局变化时 AppKit 会调此方法:先移旧再按当前 rect 重建。
+            if let existing = handleTrackingArea {
+                removeTrackingArea(existing)
+                handleTrackingArea = nil
+            }
+            removeAllToolTips()
+
+            guard let rect = dividerRect() else { return }
+            let hitRect = rect.insetBy(dx: -Self.hitSlop, dy: 0)
+
+            let area = NSTrackingArea(
+                rect: hitRect,
+                options: [.mouseEnteredAndExited, .activeInKeyWindow],
+                owner: self,
+                userInfo: nil
+            )
+            addTrackingArea(area)
+            handleTrackingArea = area
+
+            addToolTip(hitRect, owner: self, userData: nil)
+        }
+
+        override func mouseEntered(with event: NSEvent) {
+            isHovering = true
+            needsDisplay = true
+        }
+
+        override func mouseExited(with event: NSEvent) {
+            isHovering = false
+            needsDisplay = true
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            // 仅当点落在分隔条命中区内时才进入 press 态,避免点在别处时把手闪一下亮色。
+            let point = convert(event.locationInWindow, from: nil)
+            let onDivider = dividerRect().map { $0.insetBy(dx: -Self.hitSlop, dy: 0).contains(point) } ?? false
+
+            if onDivider {
+                isDragging = true
+                needsDisplay = true
+            }
+            // NSSplitView 分隔条拖动是模态跟踪循环,期间 drawDivider 会随分隔条移动被反复调用,读到亮色。
+            super.mouseDown(with: event)
+            if onDivider {
+                isDragging = false
+                needsDisplay = true
+                // 分隔条已移动,刷新命中区(tracking + tooltip)。
+                updateTrackingAreas()
+            }
+        }
+
+        func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
+            L10n.t("viewer.divider.resize")
         }
     }
 
