@@ -46,7 +46,8 @@ enum L10n {
         "main.translate.subtitle": ("翻译整份 PDF 并导出", "Translate a whole PDF and export"),
 
         // 查看模块
-        "viewer.addTranslation": ("添加译文文件", "Add Translation File"),
+        "viewer.addTab": ("再打开一个文档", "Open another document"),
+        "viewer.closeTab": ("关闭", "Close"),
         "viewer.leftRatio": ("左侧", "Left"),
         "viewer.rightRatio": ("右侧", "Right"),
         "viewer.resetRatio": ("重置两侧滚动比例为 100%", "Reset both scroll ratios to 100%"),

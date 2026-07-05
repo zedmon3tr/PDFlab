@@ -49,10 +49,14 @@ struct MainView: View {
                 case .viewer(let url):
                     ViewerView(url: url) { openedURL in
                         historyState.viewerDidOpen(openedURL, history: app.history)
+                    } onClose: {
+                        popViewer()
                     }
                 case .viewerPair(let sourceURL, let outputURL):
                     ViewerView(url: sourceURL, secondaryURL: outputURL) { openedURL in
                         historyState.viewerDidOpen(openedURL, history: app.history)
+                    } onClose: {
+                        popViewer()
                     }
                 case .translate(let url):
                     TranslateFlowView(url: url) { sourceURL, outputURL in
@@ -221,6 +225,12 @@ struct MainView: View {
     }
 
     // MARK: - 行为
+
+    private func popViewer() {
+        if !path.isEmpty {
+            path.removeLast()
+        }
+    }
 
     private func reloadHistory() {
         historyState.reload(history: app.history)

@@ -1,3 +1,4 @@
+import AppKit
 import PDFKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -11,6 +12,7 @@ struct ViewerView: View {
     let url: URL
     let secondaryURL: URL?
     let onDocumentOpened: (URL) -> Void
+    let onClose: () -> Void
 
     @EnvironmentObject private var app: AppState
 
@@ -24,25 +26,27 @@ struct ViewerView: View {
     @State private var passwordInput = ""
     @State private var passwordFailure: String?
 
-    init(url: URL, secondaryURL: URL? = nil, onDocumentOpened: @escaping (URL) -> Void = { _ in }) {
+    init(
+        url: URL,
+        secondaryURL: URL? = nil,
+        onDocumentOpened: @escaping (URL) -> Void = { _ in },
+        onClose: @escaping () -> Void = {}
+    ) {
         self.url = url
         self.secondaryURL = secondaryURL
         self.onDocumentOpened = onDocumentOpened
+        self.onClose = onClose
     }
 
     var body: some View {
-        viewerContent
+        VStack(spacing: 0) {
+            documentTabBar
+            Divider()
+            viewerContent
+        }
             .navigationTitle(primary?.title ?? url.lastPathComponent)
             .toolbar {
                 ToolbarItemGroup {
-                    Button {
-                        openSecondaryDocument()
-                    } label: {
-                        Label(L10n.t("viewer.addTranslation"), systemImage: "plus")
-                    }
-                    .buttonStyle(HoverButtonStyle(variant: .toolbar))
-                    .help(L10n.t("viewer.addTranslation"))
-
                     if secondary != nil {
                         ratioControl(L10n.t("viewer.leftRatio"), value: $ratioA)
                         ratioControl(L10n.t("viewer.rightRatio"), value: $ratioB)
@@ -107,6 +111,77 @@ struct ViewerView: View {
             Text(L10n.t("viewer.noDocument"))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    // MARK: - Chrome 式文档标签条
+
+    @ViewBuilder
+    private var documentTabBar: some View {
+        HStack(spacing: 6) {
+            if let primary {
+                documentTab(title: primary.title) { closePrimary() }
+            }
+            if let secondary {
+                documentTab(title: secondary.title) { closeSecondary() }
+            }
+            // 已开 2 个文档时隐藏 "+"(最多 2 个)。
+            if primary == nil || secondary == nil {
+                Button {
+                    openSecondaryDocument()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.callout.weight(.medium))
+                }
+                .buttonStyle(HoverButtonStyle(variant: .toolbar))
+                .help(L10n.t("viewer.addTab"))
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.quaternary.opacity(0.35))
+    }
+
+    private func documentTab(title: String, onCloseTab: @escaping () -> Void) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.callout)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 220, alignment: .leading)
+            Button(action: onCloseTab) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .buttonStyle(TabCloseButtonStyle())
+            .help(L10n.t("viewer.closeTab"))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(.background, in: RoundedRectangle(cornerRadius: 7))
+        .overlay(
+            RoundedRectangle(cornerRadius: 7)
+                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+        )
+    }
+
+    // 关闭 secondary:回到 primary 单文档。
+    private func closeSecondary() {
+        secondary = nil
+        ratioA = 1.0
+        ratioB = 1.0
+    }
+
+    // 关闭 primary:secondary 晋升为唯一文档(晋升不写历史);无 secondary 则返回主界面。
+    private func closePrimary() {
+        if let promoted = secondary {
+            primary = promoted
+            secondary = nil
+            ratioA = 1.0
+            ratioB = 1.0
+        } else {
+            onClose()
         }
     }
 
@@ -225,6 +300,37 @@ struct ViewerView: View {
 
     private static func canReadText(_ url: URL) -> Bool {
         ViewerTextLoader.load(from: url) != nil
+    }
+}
+
+/// 标签页 × 关闭按钮:小圆形命中区,hover 显示浅底 + pointingHand。
+private struct TabCloseButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        TabCloseButtonBody(configuration: configuration)
+    }
+
+    private struct TabCloseButtonBody: View {
+        let configuration: ButtonStyle.Configuration
+        @State private var isHovering = false
+
+        var body: some View {
+            configuration.label
+                .foregroundStyle(isHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .frame(width: 16, height: 16)
+                .background(
+                    Circle().fill(Color.primary.opacity(isHovering ? 0.12 : 0.0))
+                )
+                .opacity(configuration.isPressed ? 0.7 : 1)
+                .animation(.easeOut(duration: 0.1), value: isHovering)
+                .onHover { hovering in
+                    isHovering = hovering
+                    if hovering {
+                        NSCursor.pointingHand.push()
+                    } else {
+                        NSCursor.pop()
+                    }
+                }
+        }
     }
 }
 
