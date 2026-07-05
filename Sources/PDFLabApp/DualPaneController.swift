@@ -478,9 +478,11 @@ struct DualPaneController: NSViewRepresentable {
             guard let rect = dividerRect() else { return }
             let hitRect = rect.insetBy(dx: -Self.hitSlop, dy: 0)
 
+            // 光标与 hover 用同一个 tracking area:.cursorUpdate 触发 cursorUpdate(with:) 设左右拖动光标。
+            // (旧的 cursorRects 方案会被 NSSplitView 自带分隔条光标 + 滚动时子视图刷新冲掉,时灵时不灵。)
             let area = NSTrackingArea(
                 rect: hitRect,
-                options: [.mouseEnteredAndExited, .activeInKeyWindow],
+                options: [.mouseEnteredAndExited, .cursorUpdate, .activeInKeyWindow],
                 owner: self,
                 userInfo: nil
             )
@@ -488,15 +490,10 @@ struct DualPaneController: NSViewRepresentable {
             handleTrackingArea = area
 
             addToolTip(hitRect, owner: self, userData: nil)
-
-            // 分隔条移动后重设光标区域(hover 时显示左右拖动光标)。
-            window?.invalidateCursorRects(for: self)
         }
 
-        override func resetCursorRects() {
-            super.resetCursorRects()
-            guard let rect = dividerRect() else { return }
-            addCursorRect(rect.insetBy(dx: -Self.hitSlop, dy: 0), cursor: .resizeLeftRight)
+        override func cursorUpdate(with event: NSEvent) {
+            NSCursor.resizeLeftRight.set()
         }
 
         override func mouseEntered(with event: NSEvent) {
