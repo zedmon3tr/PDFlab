@@ -6,3 +6,4 @@ build: ; $(DEV) swift build
 test:  ; $(DEV) swift test $(TESTFLAGS)
 run:   ; $(DEV) swift run PDFLabApp
 bundle:; bash scripts/bundle_app.sh
+dmg: bundle ; bash scripts/make_dmg.sh
