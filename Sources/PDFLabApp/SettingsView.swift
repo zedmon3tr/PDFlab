@@ -49,6 +49,7 @@ struct SettingsView: View {
     }
 
     @EnvironmentObject private var app: AppState
+    @ObservedObject private var updater = UpdateController.shared
 
     // 秘密凭据只走 Keychain;本地 @State 仅作输入缓冲。
     @State private var llmAPIKey: String = ""
@@ -139,8 +140,96 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
+            updateSection
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - 检查更新
+
+    @ViewBuilder
+    private var updateSection: some View {
+        VStack(spacing: 10) {
+            switch updater.phase {
+            case .idle:
+                checkUpdateButton
+            case .checking:
+                checkUpdateButton
+            case .upToDate:
+                checkUpdateButton
+                Text(L10n.t("update.upToDate"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            case .updateAvailable(let info):
+                updateAvailableView(info)
+            case .downloading(let fraction):
+                if let fraction {
+                    ProgressView(value: fraction) { Text(L10n.t("update.downloading")) }
+                        .frame(width: 260)
+                } else {
+                    ProgressView(L10n.t("update.downloading"))
+                        .controlSize(.small)
+                }
+            case .downloaded:
+                Text(L10n.t("update.downloaded"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+            case .failed(let message):
+                checkUpdateButton
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 40)
+            }
+
+            Toggle(L10n.t("update.autoCheck"), isOn: $updater.autoCheckUpdates)
+                .toggleStyle(.checkbox)
+                .font(.callout)
+        }
+        .padding(.top, 8)
+    }
+
+    private var checkUpdateButton: some View {
+        Button {
+            Task { await updater.checkManually() }
+        } label: {
+            if updater.phase == .checking {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(L10n.t("update.checking"))
+                }
+            } else {
+                Text(L10n.t("update.check"))
+            }
+        }
+        .disabled(updater.phase == .checking)
+    }
+
+    private func updateAvailableView(_ info: UpdateInfo) -> some View {
+        VStack(spacing: 8) {
+            Text("\(L10n.t("update.available")) \(info.version)")
+                .font(.callout.weight(.semibold))
+            if !info.releaseNotes.isEmpty {
+                ScrollView {
+                    Text(info.releaseNotes)
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 120)
+                .padding(8)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+                .padding(.horizontal, 40)
+            }
+            HStack {
+                Button(L10n.t("update.download")) { updater.download(info) }
+                    .buttonStyle(.borderedProminent)
+                Button(L10n.t("update.skip")) { updater.skip(info) }
+            }
+        }
     }
 
     // MARK: - 外观 / 语言

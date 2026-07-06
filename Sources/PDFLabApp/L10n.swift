@@ -167,6 +167,18 @@ enum L10n {
             "A local tool for side-by-side PDF reading and Chinese–English translation: view documents in dual panes, or OCR/extract and export to PDF, Word, and Markdown."
         ),
 
+        // 检查更新
+        "update.check": ("检测更新", "Check for Updates"),
+        "update.checking": ("正在检测…", "Checking…"),
+        "update.autoCheck": ("启动时自动检测更新", "Automatically check for updates at launch"),
+        "update.upToDate": ("当前已是最新版本", "You're up to date"),
+        "update.available": ("发现新版本", "New version available:"),
+        "update.download": ("下载更新", "Download Update"),
+        "update.skip": ("跳过此版本", "Skip This Version"),
+        "update.downloading": ("正在下载更新…", "Downloading update…"),
+        "update.downloaded": ("安装包已打开,请将 PDFlab 拖入 Applications 完成更新",
+                              "Installer opened — drag PDFlab into Applications to finish updating"),
+
         // 隐私提示
         "privacy.cloudNotice": (
             "文档内容将发送至第三方翻译服务,请确认文档不含敏感信息后继续。",
