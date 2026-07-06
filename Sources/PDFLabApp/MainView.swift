@@ -25,6 +25,7 @@ struct MainView: View {
     @State private var pendingModule: PendingModule?
     @State private var showFileImporter = false
     @State private var missingEntry: HistoryEntry?
+    @State private var launchUpdate: UpdateInfo?
 
     var body: some View {
         NavigationStack(path: $path) {
@@ -97,6 +98,27 @@ struct MainView: View {
             }
         } message: {
             Text(missingEntry?.fileName ?? "")
+        }
+        .task {
+            launchUpdate = await UpdateController.shared.checkAtLaunch()
+        }
+        .alert(
+            L10n.t("update.alert.title"),
+            isPresented: Binding(
+                get: { launchUpdate != nil },
+                set: { if !$0 { launchUpdate = nil } }
+            )
+        ) {
+            Button(L10n.t("update.alert.view")) {
+                app.settingsTab = "about"
+                openSettings()
+                launchUpdate = nil
+            }
+            Button(L10n.t("update.alert.close"), role: .cancel) {
+                launchUpdate = nil
+            }
+        } message: {
+            Text("\(L10n.t("update.available")) \(launchUpdate?.version ?? "")")
         }
     }
 

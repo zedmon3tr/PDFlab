@@ -44,6 +44,9 @@ final class AppState: ObservableObject {
     /// (设置面板是独立窗口,清空后主窗口不会重新触发 .onAppear)。
     @Published private(set) var historyRevision = 0
 
+    /// 设置窗口当前 Tab("general"/"services"/"about");启动更新 alert 经它把设置定位到关于页。
+    @Published var settingsTab: String = "general"
+
     /// 清空历史并广播变更,让任何缓存历史列表的视图刷新。
     func clearHistory() {
         history.clear()

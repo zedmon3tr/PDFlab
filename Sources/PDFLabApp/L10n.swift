@@ -178,6 +178,9 @@ enum L10n {
         "update.downloading": ("正在下载更新…", "Downloading update…"),
         "update.downloaded": ("安装包已打开,请将 PDFlab 拖入 Applications 完成更新",
                               "Installer opened — drag PDFlab into Applications to finish updating"),
+        "update.alert.title": ("发现新版本", "New Version Available"),
+        "update.alert.view": ("前往查看", "View Details"),
+        "update.alert.close": ("关闭", "Close"),
 
         // 隐私提示
         "privacy.cloudNotice": (

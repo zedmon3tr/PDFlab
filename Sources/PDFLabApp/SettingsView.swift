@@ -58,19 +58,22 @@ struct SettingsView: View {
     @State private var pendingCloudEngineID: String?
 
     var body: some View {
-        TabView {
+        TabView(selection: $app.settingsTab) {
             generalTab
                 .tabItem {
                     Label(L10n.t("settings.tab.general"), systemImage: "gearshape")
                 }
+                .tag("general")
             servicesTab
                 .tabItem {
                     Label(L10n.t("settings.tab.services"), systemImage: "globe")
                 }
+                .tag("services")
             aboutTab
                 .tabItem {
                     Label(L10n.t("settings.tab.about"), systemImage: "info.circle")
                 }
+                .tag("about")
         }
         .frame(width: 760)
         .frame(minHeight: 520)
