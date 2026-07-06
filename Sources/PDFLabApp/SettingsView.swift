@@ -360,7 +360,7 @@ struct SettingsView: View {
     private var dataSection: some View {
         Section(L10n.t("settings.data")) {
             Button(L10n.t("history.clear"), role: .destructive) {
-                app.history.clear()
+                app.clearHistory()
             }
             .buttonStyle(HoverButtonStyle(variant: .danger))
         }

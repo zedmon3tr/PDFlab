@@ -68,6 +68,8 @@ struct MainView: View {
             }
         }
         .onAppear { reloadHistory() }
+        // 设置面板(独立窗口)清空历史后广播 historyRevision,主界面据此重载缓存列表。
+        .onChange(of: app.historyRevision) { reloadHistory() }
         .fileImporter(
             isPresented: $showFileImporter,
             allowedContentTypes: pendingModule == .translate ? [.pdf] : ViewerView.openableContentTypes,

@@ -40,6 +40,16 @@ final class AppState: ObservableObject {
 
     let history = HistoryStore()
 
+    /// 历史变更计数:清空/外部改动后自增,供主界面观察并重载缓存列表
+    /// (设置面板是独立窗口,清空后主窗口不会重新触发 .onAppear)。
+    @Published private(set) var historyRevision = 0
+
+    /// 清空历史并广播变更,让任何缓存历史列表的视图刷新。
+    func clearHistory() {
+        history.clear()
+        historyRevision += 1
+    }
+
     /// 当前 UI 是否为中文(供视图做少量布局分支;文案取值走 L10n)。
     var uiChinese: Bool { L10n.isChinese }
 
