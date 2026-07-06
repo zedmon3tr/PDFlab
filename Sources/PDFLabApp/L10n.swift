@@ -202,5 +202,6 @@ enum L10n {
         "error.networkError": ("网络错误", "Network error"),
         "error.exportWriteFailed": ("导出写入失败", "Failed to write the exported file"),
         "error.cancelled": ("已取消", "Cancelled"),
+        "error.updateUnavailable": ("更新服务暂不可用,请稍后重试", "Update service is unavailable. Please try again later."),
     ]
 }

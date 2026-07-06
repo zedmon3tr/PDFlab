@@ -105,8 +105,15 @@ final class UpdateController: ObservableObject {
         phase = new
     }
 
-    private nonisolated static func message(for error: Error) -> String {
-        if let e = error as? PDFLabError { return L10n.message(for: e) }
+    /// 更新专属错误文案:引擎不可用错误若来自更新检查(engineID == "update")用专属措辞,
+    /// 避免渲染成"翻译引擎暂不可用 (update)"这种与更新场景错位的文案。其他 case 委托 L10n.message(for:)。
+    nonisolated static func message(for error: Error) -> String {
+        if let e = error as? PDFLabError {
+            if case .engineUnavailable(let id) = e, id == "update" {
+                return L10n.t("error.updateUnavailable")
+            }
+            return L10n.message(for: e)
+        }
         return error.localizedDescription
     }
 }
