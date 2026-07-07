@@ -121,22 +121,28 @@ struct ViewerView: View {
             switch effectiveLayout {
             case .sideBySide:
                 if let secondary {
-                    DualPaneView(left: primary, right: secondary, ratioA: ratioA, ratioB: ratioB)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    DualPaneView(
+                        left: primary,
+                        right: secondary,
+                        ratioA: ratioA,
+                        ratioB: ratioB,
+                        translation: app.viewerTranslation
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    SingleDocumentView(document: primary)
+                    SingleDocumentView(document: primary, translation: app.viewerTranslation)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             case .single(.secondary):
                 if let secondary {
-                    SingleDocumentView(document: secondary)
+                    SingleDocumentView(document: secondary, translation: app.viewerTranslation)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    SingleDocumentView(document: primary)
+                    SingleDocumentView(document: primary, translation: app.viewerTranslation)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             case .single(.primary):
-                SingleDocumentView(document: primary)
+                SingleDocumentView(document: primary, translation: app.viewerTranslation)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         } else {
@@ -474,19 +480,15 @@ private struct ViewerAlert: Identifiable {
 
 private struct SingleDocumentView: View {
     var document: ViewerDocument
+    let translation: ViewerTranslationService
 
     var body: some View {
         switch document.kind {
         case .pdf:
-            SinglePDFView(document: document)
+            SinglePDFView(document: document, translation: translation)
         case .text:
-            ScrollView {
-                Text(ViewerTextLoader.load(from: document.url) ?? L10n.t("viewer.openFailed"))
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(24)
-            }
+            // NSTextView 承载(与对照面板同一构造),划选气泡在单文档文本视图同样生效。
+            SingleTextView(document: document, translation: translation)
         case .unsupported:
             Text(L10n.t("viewer.unsupported"))
                 .foregroundStyle(.secondary)
@@ -497,19 +499,25 @@ private struct SingleDocumentView: View {
 
 private struct SinglePDFView: NSViewRepresentable {
     var document: ViewerDocument
+    let translation: ViewerTranslationService
 
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(translation: translation)
     }
 
     func makeNSView(context: Context) -> PDFView {
         let pdfView = PDFView()
         configure(pdfView, context: context)
+        context.coordinator.selectionTranslation.attach(to: pdfView)
         return pdfView
     }
 
     func updateNSView(_ pdfView: PDFView, context: Context) {
         configure(pdfView, context: context)
+    }
+
+    static func dismantleNSView(_ pdfView: PDFView, coordinator: Coordinator) {
+        coordinator.selectionTranslation.detach()
     }
 
     private func configure(_ pdfView: PDFView, context: Context) {
@@ -526,5 +534,51 @@ private struct SinglePDFView: NSViewRepresentable {
 
     final class Coordinator {
         var documentID: String?
+        let selectionTranslation: SelectionTranslationController
+
+        init(translation: ViewerTranslationService) {
+            self.selectionTranslation = SelectionTranslationController(translation: translation)
+        }
+    }
+}
+
+/// 单文档 md/txt 视图:NSScrollView + NSTextView(经 ViewerTextViewFactory,与对照面板一致),
+/// 只读可选,挂划选气泡翻译。
+private struct SingleTextView: NSViewRepresentable {
+    var document: ViewerDocument
+    let translation: ViewerTranslationService
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(translation: translation)
+    }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let (scrollView, textView) = ViewerTextViewFactory.makeScrollable(text: loadText())
+        context.coordinator.documentID = document.id
+        context.coordinator.selectionTranslation.attach(to: textView)
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard context.coordinator.documentID != document.id else { return }
+        context.coordinator.documentID = document.id
+        (scrollView.documentView as? NSTextView)?.string = loadText()
+    }
+
+    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+        coordinator.selectionTranslation.detach()
+    }
+
+    private func loadText() -> String {
+        ViewerTextLoader.load(from: document.url) ?? L10n.t("viewer.openFailed")
+    }
+
+    final class Coordinator {
+        var documentID: String?
+        let selectionTranslation: SelectionTranslationController
+
+        init(translation: ViewerTranslationService) {
+            self.selectionTranslation = SelectionTranslationController(translation: translation)
+        }
     }
 }

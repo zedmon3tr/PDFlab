@@ -63,6 +63,7 @@ enum L10n {
         "viewer.password.title": ("PDF 密码", "PDF Password"),
         "viewer.password.prompt": ("输入密码", "Enter password"),
         "viewer.password.open": ("打开", "Open"),
+        "viewer.bubble.suggestSwitch": ("建议切换翻译引擎", "Try switching the translation engine"),
 
         // 翻译模块
         "translate.title": ("翻译", "Translate"),

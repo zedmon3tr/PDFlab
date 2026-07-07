@@ -7,7 +7,7 @@ import PDFLabCore
 @MainActor
 final class AppState: ObservableObject {
     // Keychain 键名(service 固定为 "com.pdflab.app",见 KeychainStore)
-    static let keychainLLMAPIKey = "llm.apiKey"
+    nonisolated static let keychainLLMAPIKey = "llm.apiKey"
 
     /// 引擎 ID 全集(设置面板下拉顺序)。
     nonisolated static let engineIDs = ["apple", "llm", "google", "deepl", "youdao"]
@@ -40,6 +40,10 @@ final class AppState: ObservableObject {
 
     let history = HistoryStore()
 
+    /// 查看器即时翻译共用服务(划选气泡等消费):LRU 缓存 + 并发合并;
+    /// engineProvider 每次调用都按当前设置重建引擎(切换引擎即时生效)。
+    let viewerTranslation = ViewerTranslationService(engineProvider: { AppState.makeEngineFromDefaults() })
+
     /// 历史变更计数:清空/外部改动后自增,供主界面观察并重载缓存列表
     /// (设置面板是独立窗口,清空后主窗口不会重新触发 .onAppear)。
     @Published private(set) var historyRevision = 0
@@ -61,11 +65,22 @@ final class AppState: ObservableObject {
     /// - llm 从 Keychain 取凭据,缺失时以空字符串构造(调用时由引擎报错);
     /// - google/deepl/youdao 为免 Key 非官方引擎,零配置。
     func makeEngine() -> TranslationEngine {
-        switch engineID {
+        Self.makeEngineFromDefaults()
+    }
+
+    /// 与 `makeEngine()` 同逻辑的 nonisolated 工厂:直接读 UserDefaults(线程安全,
+    /// 与 @AppStorage 同一存储、同一默认值),供 `ViewerTranslationService` 的
+    /// @Sendable engineProvider 在任意隔离域调用。
+    nonisolated static func makeEngineFromDefaults() -> TranslationEngine {
+        let defaults = UserDefaults.standard
+        switch defaults.string(forKey: "engineID") ?? "youdao" {
         case "llm":
             return OpenAICompatEngine(
-                config: LLMConfig(baseURL: llmBaseURL, model: llmModel),
-                apiKey: KeychainStore.load(key: Self.keychainLLMAPIKey) ?? ""
+                config: LLMConfig(
+                    baseURL: defaults.string(forKey: "llmBaseURL") ?? "",
+                    model: defaults.string(forKey: "llmModel") ?? ""
+                ),
+                apiKey: KeychainStore.load(key: keychainLLMAPIKey) ?? ""
             )
         case "google":
             return GoogleFreeEngine()

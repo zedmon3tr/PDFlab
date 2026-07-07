@@ -15,7 +15,9 @@ import PDFLabCore
 /// 仅当翻译方向切换(语言对不同 → config 必然不相等)时才重建 session。
 @MainActor
 public final class AppleTranslationHost: ObservableObject, AppleSessionRunner, @unchecked Sendable {
-    public static let shared = AppleTranslationHost()
+    /// 单例。nonisolated:类型为 @unchecked Sendable 且属性不可变,
+    /// 供 AppState 的 nonisolated 引擎工厂(ViewerTranslationService engineProvider)跨隔离域引用。
+    nonisolated public static let shared = AppleTranslationHost()
 
     @Published public private(set) var pendingConfig: TranslationSession.Configuration?
 
@@ -31,7 +33,8 @@ public final class AppleTranslationHost: ObservableObject, AppleSessionRunner, @
     private var stream: AsyncStream<QueuedRequest>?
     private var currentDirection: TranslationDirection?
 
-    private init() {}
+    // nonisolated:仅赋默认值,供上面 nonisolated 单例初始化表达式调用。
+    nonisolated private init() {}
 
     public var view: some View {
         Mount(host: self)

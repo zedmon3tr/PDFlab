@@ -44,6 +44,44 @@ enum ViewerTextLoader {
     ]
 }
 
+/// 只读文本查看视图(NSScrollView + NSTextView)的统一构造:
+/// 对照面板与单文档文本视图共用,保证外观与选区行为(划选气泡)一致。
+enum ViewerTextViewFactory {
+    @MainActor
+    static func makeScrollable(text: String) -> (scrollView: NSScrollView, textView: NSTextView) {
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = .textBackgroundColor
+
+        let textView = NSTextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.font = .systemFont(ofSize: 14)
+        textView.textColor = .labelColor
+        textView.backgroundColor = .textBackgroundColor
+        textView.textContainerInset = NSSize(width: 24, height: 24)
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        textView.minSize = NSSize(width: 0, height: scrollView.contentSize.height)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.containerSize = NSSize(
+            width: scrollView.contentSize.width,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.textContainer?.widthTracksTextView = true
+        textView.string = text
+
+        scrollView.documentView = textView
+        return (scrollView, textView)
+    }
+}
+
 struct DualPaneSplitMath {
     var dividerThickness: CGFloat
     var minPaneWidth: CGFloat
@@ -75,6 +113,8 @@ struct DualPaneView: View {
     var right: ViewerDocument
     var ratioA: Double
     var ratioB: Double
+    /// 划选气泡翻译服务(两侧面板各挂一个 SelectionTranslationController)。
+    let translation: ViewerTranslationService
 
     /// 左栏占比(0...1),拖动分隔条时更新。
     @State private var dividerFraction: CGFloat = 0.5
@@ -99,13 +139,13 @@ struct DualPaneView: View {
             let leftWidth = contentWidth * fraction
 
             HStack(spacing: 0) {
-                SinglePaneRepresentable(document: left, side: .left, sync: sync)
+                SinglePaneRepresentable(document: left, side: .left, sync: sync, translation: translation)
                     .frame(width: leftWidth)
                     .id(left.id)
 
                 divider(totalWidth: width)
 
-                SinglePaneRepresentable(document: right, side: .right, sync: sync)
+                SinglePaneRepresentable(document: right, side: .right, sync: sync, translation: translation)
                     .frame(maxWidth: .infinity)
                     .id(right.id)
             }
@@ -201,9 +241,10 @@ private struct SinglePaneRepresentable: NSViewRepresentable {
     let document: ViewerDocument
     let side: SyncScrollCoordinator.Side
     let sync: SyncScrollCoordinator
+    let translation: ViewerTranslationService
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(sync: sync, side: side)
+        Coordinator(sync: sync, side: side, translation: translation)
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -252,35 +293,9 @@ private struct SinglePaneRepresentable: NSViewRepresentable {
     }
 
     private func buildText(for document: ViewerDocument) -> (NSView, NSScrollView?, PDFView?) {
-        let scrollView = NSScrollView()
-        scrollView.hasVerticalScroller = true
-        scrollView.hasHorizontalScroller = false
-        scrollView.borderType = .noBorder
-        scrollView.drawsBackground = true
-        scrollView.backgroundColor = .textBackgroundColor
-
-        let textView = NSTextView()
-        textView.isEditable = false
-        textView.isSelectable = true
-        textView.isRichText = false
-        textView.importsGraphics = false
-        textView.font = .systemFont(ofSize: 14)
-        textView.textColor = .labelColor
-        textView.backgroundColor = .textBackgroundColor
-        textView.textContainerInset = NSSize(width: 24, height: 24)
-        textView.isHorizontallyResizable = false
-        textView.isVerticallyResizable = true
-        textView.autoresizingMask = [.width]
-        textView.minSize = NSSize(width: 0, height: scrollView.contentSize.height)
-        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        textView.textContainer?.containerSize = NSSize(
-            width: scrollView.contentSize.width,
-            height: CGFloat.greatestFiniteMagnitude
+        let (scrollView, _) = ViewerTextViewFactory.makeScrollable(
+            text: ViewerTextLoader.load(from: document.url) ?? L10n.t("viewer.openFailed")
         )
-        textView.textContainer?.widthTracksTextView = true
-        textView.string = ViewerTextLoader.load(from: document.url) ?? L10n.t("viewer.openFailed")
-
-        scrollView.documentView = textView
         return (scrollView, scrollView, nil)
     }
 
@@ -307,18 +322,29 @@ private struct SinglePaneRepresentable: NSViewRepresentable {
     final class Coordinator {
         private let sync: SyncScrollCoordinator
         private let side: SyncScrollCoordinator.Side
+        private let selectionTranslation: SelectionTranslationController
         private weak var view: NSView?
         private weak var pdfView: PDFView?
 
-        init(sync: SyncScrollCoordinator, side: SyncScrollCoordinator.Side) {
+        init(sync: SyncScrollCoordinator, side: SyncScrollCoordinator.Side, translation: ViewerTranslationService) {
             self.sync = sync
             self.side = side
+            self.selectionTranslation = SelectionTranslationController(translation: translation)
         }
 
         func attach(view: NSView, scrollView: NSScrollView?, pdfView: PDFView?) {
             self.view = view
             self.pdfView = pdfView
             sync.register(side: side, view: view, scrollView: scrollView, pdfView: pdfView)
+            // 划选气泡:PDF 面板挂 PDFView,文本面板挂 scrollView 里的 NSTextView。
+            // attach 由 makeNSView(主线程)调用,assumeIsolated 安全。
+            MainActor.assumeIsolated {
+                if let pdfView {
+                    selectionTranslation.attach(to: pdfView)
+                } else if let textView = scrollView?.documentView as? NSTextView {
+                    selectionTranslation.attach(to: textView)
+                }
+            }
             // PDFView 的 scrollView 首帧常未就绪:下一 runloop 再让 sync 补找一次。
             DispatchQueue.main.async { [weak self] in
                 self?.sync.refreshRegistration(side: self?.side ?? .left)
@@ -331,6 +357,9 @@ private struct SinglePaneRepresentable: NSViewRepresentable {
 
         func detach() {
             sync.unregister(side: side)
+            MainActor.assumeIsolated {
+                selectionTranslation.detach()
+            }
         }
     }
 }
