@@ -100,7 +100,7 @@ private final class ParagraphClickController {
     private var configuration: ParagraphClickConfiguration?
     private var cachedParagraphs: [Int: [PageParagraph]] = [:]
     private var documentID: String?
-    private var highlightView: ParagraphHighlightView?
+    private let highlightStore = ParagraphHighlightAnnotationStore()
 
     nonisolated init() {}
 
@@ -196,57 +196,15 @@ private final class ParagraphClickController {
     }
 
     private func updateHighlight(_ highlight: ParagraphHighlight?) {
-        guard let highlight else {
+        guard let document = pdfView?.document else {
             removeHighlight()
             return
         }
-        guard let pdfView,
-              let document = pdfView.document,
-              let page = document.page(at: highlight.pageIndex) else {
-            removeHighlight()
-            return
-        }
-
-        let pageBounds = page.bounds(for: .mediaBox)
-        let pageRect = CGRect(
-            x: pageBounds.minX + highlight.bbox.minX * pageBounds.width,
-            y: pageBounds.minY + highlight.bbox.minY * pageBounds.height,
-            width: highlight.bbox.width * pageBounds.width,
-            height: highlight.bbox.height * pageBounds.height
-        )
-        let viewRect = pdfView.convert(pageRect, from: page).insetBy(dx: -2, dy: -2)
-
-        let view = highlightView ?? ParagraphHighlightView()
-        if view.superview == nil {
-            pdfView.addSubview(view)
-        }
-        view.frame = viewRect
-        highlightView = view
+        highlightStore.apply(highlight, in: document)
     }
 
     private func removeHighlight() {
-        highlightView?.removeFromSuperview()
-        highlightView = nil
-    }
-}
-
-private final class ParagraphHighlightView: NSView {
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
-        layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.5).cgColor
-        layer?.borderWidth = 1
-        layer?.cornerRadius = 6
-        layer?.masksToBounds = true
-    }
-
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
+        highlightStore.clear()
     }
 }
 
