@@ -7,11 +7,17 @@ struct SingleDocumentView: View {
     var document: ViewerDocument
     var readingLayout: ViewerReadingLayout
     let translation: ViewerTranslationService
+    var paragraphClick: ParagraphClickConfiguration? = nil
 
     var body: some View {
         switch document.kind {
         case .pdf:
-            SinglePDFView(document: document, readingLayout: readingLayout, translation: translation)
+            SinglePDFView(
+                document: document,
+                readingLayout: readingLayout,
+                translation: translation,
+                paragraphClick: paragraphClick
+            )
         case .text:
             // NSTextView 承载(与对照面板同一构造),划选气泡在单文档文本视图同样生效。
             SingleTextView(document: document, translation: translation)
@@ -27,15 +33,17 @@ private struct SinglePDFView: NSViewRepresentable {
     var document: ViewerDocument
     var readingLayout: ViewerReadingLayout
     let translation: ViewerTranslationService
+    var paragraphClick: ParagraphClickConfiguration?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(translation: translation)
     }
 
     func makeNSView(context: Context) -> PDFView {
-        let pdfView = PDFView()
+        let pdfView = ParagraphClickPDFView()
         configure(pdfView, context: context)
         context.coordinator.selectionTranslation.attach(to: pdfView)
+        context.coordinator.paragraphClick.attach(to: pdfView)
         return pdfView
     }
 
@@ -45,6 +53,7 @@ private struct SinglePDFView: NSViewRepresentable {
 
     static func dismantleNSView(_ pdfView: PDFView, coordinator: Coordinator) {
         coordinator.selectionTranslation.detach()
+        coordinator.paragraphClick.detach()
     }
 
     private func configure(_ pdfView: PDFView, context: Context) {
@@ -55,17 +64,189 @@ private struct SinglePDFView: NSViewRepresentable {
             pdfView.autoScales = true
             pdfView.backgroundColor = .textBackgroundColor
             pdfView.document = try? PDFTextExtractor.openDocument(at: document.url, password: document.password)
+            context.coordinator.paragraphClick.reset(documentID: document.id)
         }
         readingLayout.apply(to: pdfView)
+        context.coordinator.paragraphClick.update(configuration: paragraphClick)
     }
 
     final class Coordinator {
         var documentID: String?
         let selectionTranslation: SelectionTranslationController
+        let paragraphClick = ParagraphClickController()
 
         init(translation: ViewerTranslationService) {
             self.selectionTranslation = SelectionTranslationController(translation: translation)
         }
+    }
+}
+
+private final class ParagraphClickPDFView: PDFView {
+    var paragraphClickHandler: ((NSEvent, ParagraphClickPDFView) -> Void)?
+
+    override func mouseUp(with event: NSEvent) {
+        super.mouseUp(with: event)
+        guard event.clickCount == 1 else { return }
+        if let selected = currentSelection?.string, SelectionTranslationText.cleaned(selected) != nil {
+            return
+        }
+        paragraphClickHandler?(event, self)
+    }
+}
+
+@MainActor
+private final class ParagraphClickController {
+    private weak var pdfView: ParagraphClickPDFView?
+    private var configuration: ParagraphClickConfiguration?
+    private var cachedParagraphs: [Int: [PageParagraph]] = [:]
+    private var documentID: String?
+    private var highlightView: ParagraphHighlightView?
+
+    nonisolated init() {}
+
+    func attach(to pdfView: ParagraphClickPDFView) {
+        self.pdfView = pdfView
+        pdfView.paragraphClickHandler = { [weak self] event, pdfView in
+            self?.handle(event, in: pdfView)
+        }
+    }
+
+    func detach() {
+        pdfView?.paragraphClickHandler = nil
+        removeHighlight()
+        pdfView = nil
+        configuration = nil
+        cachedParagraphs.removeAll()
+    }
+
+    func reset(documentID: String) {
+        guard self.documentID != documentID else { return }
+        self.documentID = documentID
+        cachedParagraphs.removeAll()
+        removeHighlight()
+    }
+
+    func update(configuration: ParagraphClickConfiguration?) {
+        self.configuration = configuration
+        guard let configuration else {
+            removeHighlight()
+            return
+        }
+        updateHighlight(configuration.highlight)
+    }
+
+    private func handle(_ event: NSEvent, in pdfView: ParagraphClickPDFView) {
+        guard let configuration else { return }
+        guard let document = pdfView.document else {
+            configuration.onMiss()
+            return
+        }
+
+        let viewPoint = pdfView.convert(event.locationInWindow, from: nil)
+        guard let page = pdfView.page(for: viewPoint, nearest: false) else {
+            configuration.onMiss()
+            return
+        }
+
+        let pagePoint = pdfView.convert(viewPoint, to: page)
+        let pageBounds = page.bounds(for: .mediaBox)
+        guard pageBounds.width > 0, pageBounds.height > 0 else {
+            configuration.onMiss()
+            return
+        }
+
+        let normalized = CGPoint(
+            x: (pagePoint.x - pageBounds.minX) / pageBounds.width,
+            y: (pagePoint.y - pageBounds.minY) / pageBounds.height
+        )
+        guard normalized.x >= 0, normalized.x <= 1, normalized.y >= 0, normalized.y <= 1 else {
+            configuration.onMiss()
+            return
+        }
+
+        let pageIndex = document.index(for: page)
+        guard pageIndex != NSNotFound else {
+            configuration.onMiss()
+            return
+        }
+
+        let paragraphs = paragraphs(for: pageIndex, in: document)
+        guard let paragraphIndex = ParagraphHitTester.hitTest(point: normalized, in: paragraphs) else {
+            configuration.onMiss()
+            return
+        }
+
+        configuration.onSelection(
+            ParagraphClickSelection(
+                pageIndex: pageIndex,
+                paragraphIndex: paragraphIndex,
+                paragraph: paragraphs[paragraphIndex]
+            )
+        )
+    }
+
+    private func paragraphs(for pageIndex: Int, in document: PDFDocument) -> [PageParagraph] {
+        if let cached = cachedParagraphs[pageIndex] {
+            return cached
+        }
+        let extraction = PDFTextExtractor.extractPage(document, pageIndex: pageIndex)
+        let paragraphs = extraction.isScanned ? [] : ParagraphHitTester.paragraphs(from: extraction.lines)
+        cachedParagraphs[pageIndex] = paragraphs
+        return paragraphs
+    }
+
+    private func updateHighlight(_ highlight: ParagraphHighlight?) {
+        guard let highlight else {
+            removeHighlight()
+            return
+        }
+        guard let pdfView,
+              let document = pdfView.document,
+              let page = document.page(at: highlight.pageIndex) else {
+            removeHighlight()
+            return
+        }
+
+        let pageBounds = page.bounds(for: .mediaBox)
+        let pageRect = CGRect(
+            x: pageBounds.minX + highlight.bbox.minX * pageBounds.width,
+            y: pageBounds.minY + highlight.bbox.minY * pageBounds.height,
+            width: highlight.bbox.width * pageBounds.width,
+            height: highlight.bbox.height * pageBounds.height
+        )
+        let viewRect = pdfView.convert(pageRect, from: page).insetBy(dx: -2, dy: -2)
+
+        let view = highlightView ?? ParagraphHighlightView()
+        if view.superview == nil {
+            pdfView.addSubview(view)
+        }
+        view.frame = viewRect
+        highlightView = view
+    }
+
+    private func removeHighlight() {
+        highlightView?.removeFromSuperview()
+        highlightView = nil
+    }
+}
+
+private final class ParagraphHighlightView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
+        layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.5).cgColor
+        layer?.borderWidth = 1
+        layer?.cornerRadius = 6
+        layer?.masksToBounds = true
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
     }
 }
 

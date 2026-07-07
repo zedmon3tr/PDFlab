@@ -28,6 +28,8 @@ struct ViewerView: View {
     @State private var passwordRequest: PasswordRequest?
     @State private var passwordInput = ""
     @State private var passwordFailure: String?
+    @State private var paragraphTranslations: [ParagraphTranslationEntry] = []
+    @State private var paragraphHighlight: ParagraphHighlight?
 
     init(
         url: URL,
@@ -135,41 +137,53 @@ struct ViewerView: View {
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    SingleDocumentView(
-                        document: primary,
-                        readingLayout: readingLayout,
-                        translation: app.viewerTranslation
-                    )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    singleDocumentContent(primary, paragraphClick: paragraphClickConfiguration(for: primary))
                 }
             case .single(.secondary):
                 if let secondary {
-                    SingleDocumentView(
-                        document: secondary,
-                        readingLayout: readingLayout,
-                        translation: app.viewerTranslation
-                    )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    singleDocumentContent(secondary, paragraphClick: nil)
                 } else {
-                    SingleDocumentView(
-                        document: primary,
-                        readingLayout: readingLayout,
-                        translation: app.viewerTranslation
-                    )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    singleDocumentContent(primary, paragraphClick: paragraphClickConfiguration(for: primary))
                 }
             case .single(.primary):
-                SingleDocumentView(
-                    document: primary,
-                    readingLayout: readingLayout,
-                    translation: app.viewerTranslation
-                )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                singleDocumentContent(primary, paragraphClick: paragraphClickConfiguration(for: primary))
             }
         } else {
             Text(L10n.t("viewer.noDocument"))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder
+    private func singleDocumentContent(
+        _ document: ViewerDocument,
+        paragraphClick: ParagraphClickConfiguration?
+    ) -> some View {
+        if let paragraphClick {
+            HStack(spacing: 0) {
+                SingleDocumentView(
+                    document: document,
+                    readingLayout: readingLayout,
+                    translation: app.viewerTranslation,
+                    paragraphClick: paragraphClick
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if !paragraphTranslations.isEmpty {
+                    Divider()
+                    TranslationSidebar(entries: paragraphTranslations, onClear: clearParagraphTranslations)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            SingleDocumentView(
+                document: document,
+                readingLayout: readingLayout,
+                translation: app.viewerTranslation,
+                paragraphClick: nil
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -277,6 +291,7 @@ struct ViewerView: View {
     // 关闭 primary:secondary 晋升为唯一文档(晋升不写历史);无 secondary 则返回主界面。
     private func closePrimary() {
         if let promoted = secondary {
+            clearParagraphTranslations()
             primary = promoted
             secondary = nil
             layout = .single(.primary)
@@ -321,6 +336,59 @@ struct ViewerView: View {
 
     private var hasPDFDocument: Bool {
         primary?.kind == .pdf || secondary?.kind == .pdf
+    }
+
+    private func paragraphClickConfiguration(for document: ViewerDocument) -> ParagraphClickConfiguration? {
+        guard secondary == nil, document.kind == .pdf else { return nil }
+        return ParagraphClickConfiguration(
+            highlight: paragraphHighlight,
+            onSelection: { selection in
+                handleParagraphSelection(selection)
+            },
+            onMiss: {
+                paragraphHighlight = nil
+            }
+        )
+    }
+
+    private func handleParagraphSelection(_ selection: ParagraphClickSelection) {
+        paragraphHighlight = ParagraphHighlight(pageIndex: selection.pageIndex, bbox: selection.paragraph.bbox)
+        let entry = ParagraphTranslationEntry(pageIndex: selection.pageIndex, sourceText: selection.paragraph.text)
+        paragraphTranslations.append(entry)
+
+        Task { [entryID = entry.id, text = selection.paragraph.text, translation = app.viewerTranslation] in
+            do {
+                let result = try await translation.translate(text)
+                await MainActor.run {
+                    updateParagraphTranslation(entryID, state: .translated(result.text))
+                }
+            } catch is CancellationError {
+                // Clearing the sidebar can make this result irrelevant; leave silently.
+            } catch PDFLabError.cancelled {
+                // Same cancellation path as the selection bubble.
+            } catch {
+                let presentation = SelectionBubbleFailure.presentation(for: error)
+                await MainActor.run {
+                    updateParagraphTranslation(
+                        entryID,
+                        state: .failed(
+                            message: presentation.message,
+                            suggestsEngineSwitch: presentation.suggestsEngineSwitch
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private func updateParagraphTranslation(_ id: UUID, state: ParagraphTranslationState) {
+        guard let index = paragraphTranslations.firstIndex(where: { $0.id == id }) else { return }
+        paragraphTranslations[index].state = state
+    }
+
+    private func clearParagraphTranslations() {
+        paragraphTranslations.removeAll()
+        paragraphHighlight = nil
     }
 
     private var readingLayoutControl: some View {
@@ -431,8 +499,10 @@ struct ViewerView: View {
     private func assign(_ document: ViewerDocument, side: ViewerSide) {
         switch side {
         case .primary:
+            clearParagraphTranslations()
             primary = document
         case .secondary:
+            clearParagraphTranslations()
             // 每次进入/更换对照文档时把滚动比例恢复默认,不带上次残留值。
             ratioA = 1.0
             ratioB = 1.0

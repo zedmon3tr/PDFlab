@@ -68,6 +68,10 @@ enum L10n {
         "viewer.password.prompt": ("输入密码", "Enter password"),
         "viewer.password.open": ("打开", "Open"),
         "viewer.bubble.suggestSwitch": ("建议切换翻译引擎", "Try switching the translation engine"),
+        "viewer.paragraph.sidebar.title": ("段落译文", "Paragraph Translation"),
+        "viewer.paragraph.sidebar.clear": ("清空段落译文", "Clear Paragraph Translations"),
+        "viewer.paragraph.sidebar.loading": ("正在翻译", "Translating"),
+        "viewer.paragraph.sidebar.page": ("第 %d 页", "Page %d"),
 
         // 翻译模块
         "translate.title": ("翻译", "Translate"),
