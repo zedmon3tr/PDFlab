@@ -30,6 +30,7 @@ struct ViewerView: View {
     @State private var passwordFailure: String?
     @State private var paragraphTranslations: [ParagraphTranslationEntry] = []
     @State private var paragraphHighlight: ParagraphHighlight?
+    @State private var paragraphTranslationTasks = ParagraphTranslationTaskRegistry()
 
     init(
         url: URL,
@@ -67,6 +68,7 @@ struct ViewerView: View {
                 }
             }
             .onAppear(perform: loadInitialDocuments)
+            .onDisappear(perform: clearParagraphTranslations)
             .alert(item: $alert) { item in
                 Alert(
                     title: Text(item.title),
@@ -356,7 +358,13 @@ struct ViewerView: View {
         let entry = ParagraphTranslationEntry(pageIndex: selection.pageIndex, sourceText: selection.paragraph.text)
         paragraphTranslations.append(entry)
 
-        Task { [entryID = entry.id, text = selection.paragraph.text, translation = app.viewerTranslation] in
+        let registry = paragraphTranslationTasks
+        let task = Task { [entryID = entry.id, text = selection.paragraph.text, translation = app.viewerTranslation, registry] in
+            defer {
+                Task { @MainActor in
+                    registry.remove(entryID)
+                }
+            }
             do {
                 let result = try await translation.translate(text)
                 await MainActor.run {
@@ -379,6 +387,7 @@ struct ViewerView: View {
                 }
             }
         }
+        paragraphTranslationTasks.insert(task, for: entry.id)
     }
 
     private func updateParagraphTranslation(_ id: UUID, state: ParagraphTranslationState) {
@@ -387,6 +396,7 @@ struct ViewerView: View {
     }
 
     private func clearParagraphTranslations() {
+        paragraphTranslationTasks.cancelAll()
         paragraphTranslations.removeAll()
         paragraphHighlight = nil
     }

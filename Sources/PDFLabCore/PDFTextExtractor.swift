@@ -76,14 +76,14 @@ public enum PDFTextExtractor {
             .first
     }
 
-    private static func normalizedBBox(from rect: CGRect, pageBounds: CGRect, fallback: CGRect) -> CGRect {
+    static func normalizedBBox(from rect: CGRect, pageBounds: CGRect, fallback: CGRect) -> CGRect {
         guard pageBounds.width > 0, pageBounds.height > 0 else {
             return fallback
         }
-        let minX = clamp(rect.minX / pageBounds.width, min: 0, max: 1)
-        let minY = clamp(rect.minY / pageBounds.height, min: 0, max: 1)
-        let maxX = clamp(rect.maxX / pageBounds.width, min: minX, max: 1)
-        let maxY = clamp(rect.maxY / pageBounds.height, min: minY, max: 1)
+        let minX = clamp((rect.minX - pageBounds.minX) / pageBounds.width, min: 0, max: 1)
+        let minY = clamp((rect.minY - pageBounds.minY) / pageBounds.height, min: 0, max: 1)
+        let maxX = clamp((rect.maxX - pageBounds.minX) / pageBounds.width, min: minX, max: 1)
+        let maxY = clamp((rect.maxY - pageBounds.minY) / pageBounds.height, min: minY, max: 1)
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 

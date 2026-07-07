@@ -86,7 +86,11 @@ private final class ParagraphClickPDFView: PDFView {
 
     override func mouseUp(with event: NSEvent) {
         super.mouseUp(with: event)
-        guard event.clickCount == 1 else { return }
+        guard ParagraphClickGate.isPlainPrimarySingleClick(
+            clickCount: event.clickCount,
+            buttonNumber: event.buttonNumber,
+            modifierFlags: event.modifierFlags
+        ) else { return }
         if let selected = currentSelection?.string, SelectionTranslationText.cleaned(selected) != nil {
             return
         }
@@ -149,6 +153,9 @@ private final class ParagraphClickController {
         }
 
         let pagePoint = pdfView.convert(viewPoint, to: page)
+        guard !ParagraphClickGate.hasBlockingAnnotation(on: page, at: pagePoint) else {
+            return
+        }
         let pageBounds = page.bounds(for: .mediaBox)
         guard pageBounds.width > 0, pageBounds.height > 0 else {
             configuration.onMiss()

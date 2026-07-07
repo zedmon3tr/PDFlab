@@ -2,6 +2,8 @@ import AppKit
 import PDFKit
 
 final class ParagraphHighlightAnnotationStore {
+    private static let marker = "com.pdflab.paragraph-highlight"
+
     private var installed: (page: PDFPage, annotation: PDFAnnotation)?
 
     static func pageBounds(for highlight: ParagraphHighlight, on page: PDFPage) -> CGRect {
@@ -37,12 +39,21 @@ final class ParagraphHighlightAnnotationStore {
         installed = nil
     }
 
+    static func markAsParagraphHighlight(_ annotation: PDFAnnotation) {
+        annotation.contents = marker
+    }
+
+    static func isParagraphHighlight(_ annotation: PDFAnnotation) -> Bool {
+        annotation.contents == marker
+    }
+
     deinit {
         clear()
     }
 
     private static func makeAnnotation(bounds: CGRect) -> PDFAnnotation {
         let annotation = PDFAnnotation(bounds: bounds, forType: .square, withProperties: nil)
+        markAsParagraphHighlight(annotation)
         annotation.color = NSColor.controlAccentColor.withAlphaComponent(0.55)
         annotation.interiorColor = NSColor.controlAccentColor.withAlphaComponent(0.18)
         annotation.isReadOnly = true
