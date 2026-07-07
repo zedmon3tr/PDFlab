@@ -383,8 +383,12 @@ final class SelectionTranslationController: NSObject, NSPopoverDelegate {
     // MARK: NSPopoverDelegate
 
     /// transient 点击外部关闭时取消还在跑的翻译任务,不浪费引擎调用。
+    /// 必须校验关闭的是"当前"气泡:show() 里 performClose 旧泡后,本回调经 Task 延迟到达,
+    /// 此时 self.popover 已指向新泡——不校验会误杀刚建的新翻译任务(新泡永久 loading)。
     nonisolated func popoverDidClose(_ notification: Notification) {
+        let closed = notification.object as? NSPopover
         Task { @MainActor in
+            guard let closed, closed === self.popover else { return }
             self.translationTask?.cancel()
             self.translationTask = nil
         }
