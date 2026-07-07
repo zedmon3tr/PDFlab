@@ -8,6 +8,7 @@ struct SingleDocumentView: View {
     var readingLayout: ViewerReadingLayout
     let translation: ViewerTranslationService
     var paragraphClick: ParagraphClickConfiguration? = nil
+    var pageContext: ParagraphPageContextConfiguration? = nil
 
     var body: some View {
         switch document.kind {
@@ -16,7 +17,8 @@ struct SingleDocumentView: View {
                 document: document,
                 readingLayout: readingLayout,
                 translation: translation,
-                paragraphClick: paragraphClick
+                paragraphClick: paragraphClick,
+                pageContext: pageContext
             )
         case .text:
             // NSTextView 承载(与对照面板同一构造),划选气泡在单文档文本视图同样生效。
@@ -34,6 +36,7 @@ private struct SinglePDFView: NSViewRepresentable {
     var readingLayout: ViewerReadingLayout
     let translation: ViewerTranslationService
     var paragraphClick: ParagraphClickConfiguration?
+    var pageContext: ParagraphPageContextConfiguration?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(translation: translation)
@@ -68,6 +71,7 @@ private struct SinglePDFView: NSViewRepresentable {
         }
         readingLayout.apply(to: pdfView)
         context.coordinator.paragraphClick.update(configuration: paragraphClick)
+        context.coordinator.paragraphClick.update(pageContextConfiguration: pageContext, forceEmit: documentChanged)
     }
 
     final class Coordinator {
@@ -102,8 +106,10 @@ private final class ParagraphClickPDFView: PDFView {
 private final class ParagraphClickController {
     private weak var pdfView: ParagraphClickPDFView?
     private var configuration: ParagraphClickConfiguration?
+    private var pageContextConfiguration: ParagraphPageContextConfiguration?
     private var cachedParagraphs: [Int: [PageParagraph]] = [:]
     private var documentID: String?
+    private var pageChangeObserver: NSObjectProtocol?
     private let highlightStore = ParagraphHighlightAnnotationStore()
 
     nonisolated init() {}
@@ -113,13 +119,27 @@ private final class ParagraphClickController {
         pdfView.paragraphClickHandler = { [weak self] event, pdfView in
             self?.handle(event, in: pdfView)
         }
+        pageChangeObserver = NotificationCenter.default.addObserver(
+            forName: .PDFViewPageChanged,
+            object: pdfView,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.emitCurrentPageContext()
+            }
+        }
     }
 
     func detach() {
         pdfView?.paragraphClickHandler = nil
+        if let pageChangeObserver {
+            NotificationCenter.default.removeObserver(pageChangeObserver)
+        }
+        pageChangeObserver = nil
         removeHighlight()
         pdfView = nil
         configuration = nil
+        pageContextConfiguration = nil
         cachedParagraphs.removeAll()
     }
 
@@ -137,6 +157,13 @@ private final class ParagraphClickController {
             return
         }
         updateHighlight(configuration.highlight)
+    }
+
+    func update(pageContextConfiguration: ParagraphPageContextConfiguration?, forceEmit: Bool) {
+        let wasDisabled = self.pageContextConfiguration == nil
+        self.pageContextConfiguration = pageContextConfiguration
+        guard pageContextConfiguration != nil, wasDisabled || forceEmit else { return }
+        emitCurrentPageContext()
     }
 
     private func handle(_ event: NSEvent, in pdfView: ParagraphClickPDFView) {
@@ -200,6 +227,19 @@ private final class ParagraphClickController {
         let paragraphs = extraction.isScanned ? [] : ParagraphHitTester.paragraphs(from: extraction.lines)
         cachedParagraphs[pageIndex] = paragraphs
         return paragraphs
+    }
+
+    private func emitCurrentPageContext() {
+        guard let pageContextConfiguration else { return }
+        guard let pdfView, let document = pdfView.document, let page = pdfView.currentPage else { return }
+        let pageIndex = document.index(for: page)
+        guard pageIndex != NSNotFound else { return }
+        pageContextConfiguration.onPageContext(
+            ParagraphPageContext(
+                pageIndex: pageIndex,
+                paragraphs: paragraphs(for: pageIndex, in: document)
+            )
+        )
     }
 
     private func updateHighlight(_ highlight: ParagraphHighlight?) {

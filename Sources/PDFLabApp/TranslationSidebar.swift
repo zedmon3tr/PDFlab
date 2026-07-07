@@ -22,12 +22,20 @@ struct ParagraphTranslationEntry: Identifiable, Equatable {
     let id: UUID
     var pageIndex: Int
     var sourceText: String
+    var isLowQualityOCR: Bool
     var state: ParagraphTranslationState
 
-    init(id: UUID = UUID(), pageIndex: Int, sourceText: String, state: ParagraphTranslationState = .loading) {
+    init(
+        id: UUID = UUID(),
+        pageIndex: Int,
+        sourceText: String,
+        isLowQualityOCR: Bool = false,
+        state: ParagraphTranslationState = .loading
+    ) {
         self.id = id
         self.pageIndex = pageIndex
         self.sourceText = sourceText
+        self.isLowQualityOCR = isLowQualityOCR
         self.state = state
     }
 }
@@ -78,9 +86,19 @@ private struct ParagraphTranslationEntryView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(String(format: L10n.t("viewer.paragraph.sidebar.page"), entry.pageIndex + 1))
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text(String(format: L10n.t("viewer.paragraph.sidebar.page"), entry.pageIndex + 1))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if entry.isLowQualityOCR {
+                    Text(L10n.t("viewer.paragraph.lowQuality"))
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .background(.orange.opacity(0.12), in: Capsule())
+                }
+            }
 
             Text(entry.sourceText)
                 .font(.callout)

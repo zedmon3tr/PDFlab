@@ -72,6 +72,8 @@ enum L10n {
         "viewer.paragraph.sidebar.clear": ("清空段落译文", "Clear Paragraph Translations"),
         "viewer.paragraph.sidebar.loading": ("正在翻译", "Translating"),
         "viewer.paragraph.sidebar.page": ("第 %d 页", "Page %d"),
+        "viewer.paragraph.lowQuality": ("识别质量低", "Low OCR quality"),
+        "viewer.fullPageTranslation": ("整页翻译", "Full Page Translation"),
 
         // 翻译模块
         "translate.title": ("翻译", "Translate"),
