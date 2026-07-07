@@ -39,10 +39,12 @@ public actor ViewerTranslationService {
     }
 
     /// 批量翻译(整页翻译用):逐段复用同一缓存与 in-flight 合并逻辑;顺序与输入一致。
+    /// 每段开始前检查取消:用户取消整页翻译后,不再对剩余段发出新的引擎请求。
     public func translateBatch(_ texts: [String], direction: TranslationDirection) async throws -> [String] {
         var results: [String] = []
         results.reserveCapacity(texts.count)
         for text in texts {
+            try Task.checkCancellation()
             results.append(try await translate(text, direction: direction))
         }
         return results
@@ -61,12 +63,18 @@ public actor ViewerTranslationService {
         }
 
         if let existing = inFlight[key] {
+            // 取消可能发生在排队等待既有 in-flight 请求之前;此时不应挂上去等一个我们已不关心的结果。
+            try Task.checkCancellation()
             return try await existing.value
         }
 
         let task = Task<String, Error> {
             let results = try await engine.translate([text], direction: direction)
-            return results.first ?? ""
+            guard let first = results.first else {
+                // 引擎异常返回空数组:不得把空串当作合法译文写入缓存,视为该引擎不可用。
+                throw PDFLabError.engineUnavailable(engineID: engine.id)
+            }
+            return first
         }
         inFlight[key] = task
 
