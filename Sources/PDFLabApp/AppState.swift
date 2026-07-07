@@ -9,12 +9,12 @@ final class AppState: ObservableObject {
     // Keychain 键名(service 固定为 "com.pdflab.app",见 KeychainStore)
     nonisolated static let keychainLLMAPIKey = "llm.apiKey"
 
-    /// 引擎 ID 全集(设置面板下拉顺序)。
-    nonisolated static let engineIDs = ["apple", "llm", "google", "deepl", "youdao"]
+    /// 引擎 ID 全集(设置面板下拉顺序),由 `TranslationEngineDescriptor` 单点派生。
+    nonisolated static let engineIDs = TranslationEngineDescriptor.all.map(\.id)
     /// 会把文档内容发往云端的引擎(首次选中时需要隐私确认)。
-    nonisolated static let cloudEngineIDs: Set<String> = ["llm", "google", "deepl", "youdao"]
+    nonisolated static let cloudEngineIDs = Set(TranslationEngineDescriptor.all.filter { $0.isCloud }.map(\.id))
     /// 非官方接口引擎(设置面板显示不稳定 badge)。
-    nonisolated static let unofficialEngineIDs: Set<String> = ["google", "deepl", "youdao"]
+    nonisolated static let unofficialEngineIDs = Set(TranslationEngineDescriptor.all.filter { $0.isUnofficial }.map(\.id))
 
     // @AppStorage 在 ObservableObject 内不会自动触发刷新,willSet 手动补发。
     @AppStorage("appearance") var appearance: String = "system" {
@@ -24,7 +24,7 @@ final class AppState: ObservableObject {
         willSet { objectWillChange.send() }
     }
     // 默认引擎:有道免 Key 网页接口(用户 2026-07-04 指定)。
-    @AppStorage("engineID") var engineID: String = "youdao" {
+    @AppStorage("engineID") var engineID: String = TranslationEngineDescriptor.defaultID {
         willSet { objectWillChange.send() }
     }
     @AppStorage("llmBaseURL") var llmBaseURL: String = "" {
@@ -73,7 +73,7 @@ final class AppState: ObservableObject {
     /// @Sendable engineProvider 在任意隔离域调用。
     nonisolated static func makeEngineFromDefaults() -> TranslationEngine {
         let defaults = UserDefaults.standard
-        switch defaults.string(forKey: "engineID") ?? "youdao" {
+        switch defaults.string(forKey: "engineID") ?? TranslationEngineDescriptor.defaultID {
         case "llm":
             return OpenAICompatEngine(
                 config: LLMConfig(

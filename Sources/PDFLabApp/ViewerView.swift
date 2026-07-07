@@ -20,6 +20,7 @@ struct ViewerView: View {
     @State private var primary: ViewerDocument?
     @State private var secondary: ViewerDocument?
     @State private var layout: ViewerLayout = .single(.primary)
+    @State private var readingLayout = ViewerReadingLayout.defaultLayout
     @State private var lastFocusedSide: ViewerSide = .primary
     @State private var ratioA = 1.0
     @State private var ratioB = 1.0
@@ -53,6 +54,9 @@ struct ViewerView: View {
                         ratioControl(L10n.t("viewer.leftRatio"), value: $ratioA)
                         ratioControl(L10n.t("viewer.rightRatio"), value: $ratioB)
                         resetRatioButton
+                    }
+                    if hasPDFDocument {
+                        readingLayoutControl
                     }
                     // 两文档打开时始终显示单看↔并排分段开关(用于随时切回并排)。
                     if secondary != nil {
@@ -126,23 +130,40 @@ struct ViewerView: View {
                         right: secondary,
                         ratioA: ratioA,
                         ratioB: ratioB,
+                        readingLayout: readingLayout,
                         translation: app.viewerTranslation
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    SingleDocumentView(document: primary, translation: app.viewerTranslation)
+                    SingleDocumentView(
+                        document: primary,
+                        readingLayout: readingLayout,
+                        translation: app.viewerTranslation
+                    )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             case .single(.secondary):
                 if let secondary {
-                    SingleDocumentView(document: secondary, translation: app.viewerTranslation)
+                    SingleDocumentView(
+                        document: secondary,
+                        readingLayout: readingLayout,
+                        translation: app.viewerTranslation
+                    )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    SingleDocumentView(document: primary, translation: app.viewerTranslation)
+                    SingleDocumentView(
+                        document: primary,
+                        readingLayout: readingLayout,
+                        translation: app.viewerTranslation
+                    )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             case .single(.primary):
-                SingleDocumentView(document: primary, translation: app.viewerTranslation)
+                SingleDocumentView(
+                    document: primary,
+                    readingLayout: readingLayout,
+                    translation: app.viewerTranslation
+                )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         } else {
@@ -296,6 +317,24 @@ struct ViewerView: View {
                 }
             }
         )
+    }
+
+    private var hasPDFDocument: Bool {
+        primary?.kind == .pdf || secondary?.kind == .pdf
+    }
+
+    private var readingLayoutControl: some View {
+        Picker(L10n.t("viewer.pageLayout"), selection: $readingLayout) {
+            ForEach(ViewerReadingLayout.allCases) { layout in
+                Image(systemName: layout.iconName)
+                    .help(L10n.t(layout.titleKey))
+                    .tag(layout)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .help(L10n.t("viewer.pageLayout"))
     }
 
     // macOS 工具栏常不渲染 Stepper 的 label,数值必须用独立 Text 显式呈现。
@@ -476,109 +515,4 @@ private struct ViewerAlert: Identifiable {
     let id = UUID()
     var title: String
     var message: String
-}
-
-private struct SingleDocumentView: View {
-    var document: ViewerDocument
-    let translation: ViewerTranslationService
-
-    var body: some View {
-        switch document.kind {
-        case .pdf:
-            SinglePDFView(document: document, translation: translation)
-        case .text:
-            // NSTextView 承载(与对照面板同一构造),划选气泡在单文档文本视图同样生效。
-            SingleTextView(document: document, translation: translation)
-        case .unsupported:
-            Text(L10n.t("viewer.unsupported"))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
-}
-
-private struct SinglePDFView: NSViewRepresentable {
-    var document: ViewerDocument
-    let translation: ViewerTranslationService
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(translation: translation)
-    }
-
-    func makeNSView(context: Context) -> PDFView {
-        let pdfView = PDFView()
-        configure(pdfView, context: context)
-        context.coordinator.selectionTranslation.attach(to: pdfView)
-        return pdfView
-    }
-
-    func updateNSView(_ pdfView: PDFView, context: Context) {
-        configure(pdfView, context: context)
-    }
-
-    static func dismantleNSView(_ pdfView: PDFView, coordinator: Coordinator) {
-        coordinator.selectionTranslation.detach()
-    }
-
-    private func configure(_ pdfView: PDFView, context: Context) {
-        guard context.coordinator.documentID != document.id else { return }
-        context.coordinator.documentID = document.id
-
-        pdfView.displayMode = .singlePageContinuous
-        pdfView.displayDirection = .vertical
-        pdfView.displaysPageBreaks = true
-        pdfView.autoScales = true
-        pdfView.backgroundColor = .textBackgroundColor
-        pdfView.document = try? PDFTextExtractor.openDocument(at: document.url, password: document.password)
-    }
-
-    final class Coordinator {
-        var documentID: String?
-        let selectionTranslation: SelectionTranslationController
-
-        init(translation: ViewerTranslationService) {
-            self.selectionTranslation = SelectionTranslationController(translation: translation)
-        }
-    }
-}
-
-/// 单文档 md/txt 视图:NSScrollView + NSTextView(经 ViewerTextViewFactory,与对照面板一致),
-/// 只读可选,挂划选气泡翻译。
-private struct SingleTextView: NSViewRepresentable {
-    var document: ViewerDocument
-    let translation: ViewerTranslationService
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(translation: translation)
-    }
-
-    func makeNSView(context: Context) -> NSScrollView {
-        let (scrollView, textView) = ViewerTextViewFactory.makeScrollable(text: loadText())
-        context.coordinator.documentID = document.id
-        context.coordinator.selectionTranslation.attach(to: textView)
-        return scrollView
-    }
-
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
-        guard context.coordinator.documentID != document.id else { return }
-        context.coordinator.documentID = document.id
-        (scrollView.documentView as? NSTextView)?.string = loadText()
-    }
-
-    static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
-        coordinator.selectionTranslation.detach()
-    }
-
-    private func loadText() -> String {
-        ViewerTextLoader.load(from: document.url) ?? L10n.t("viewer.openFailed")
-    }
-
-    final class Coordinator {
-        var documentID: String?
-        let selectionTranslation: SelectionTranslationController
-
-        init(translation: ViewerTranslationService) {
-            self.selectionTranslation = SelectionTranslationController(translation: translation)
-        }
-    }
 }

@@ -155,8 +155,8 @@ final class SelectionTranslationController: NSObject, NSPopoverDelegate {
     private var notificationObservers: [NSObjectProtocol] = []
     private var eventMonitor: Any?
 
-    /// 拖选中(左键按下)发生过选区变化,等松开后评估。
-    private var pendingEvaluation = false
+    /// 拖选中发生过选区变化或宿主内拖拽,等松开后评估。
+    private var evaluationGate = SelectionEvaluationGate()
 
     private var popover: NSPopover?
     private var translationTask: Task<Void, Never>?
@@ -184,7 +184,7 @@ final class SelectionTranslationController: NSObject, NSPopoverDelegate {
     func attach(to textView: NSTextView) {
         self.textView = textView
         observe(name: NSTextView.didChangeSelectionNotification, object: textView) { [weak self] in
-            self?.markPendingIfDragging()
+            self?.handleTextSelectionChanged()
         }
         installEventMonitorIfNeeded()
     }
@@ -226,8 +226,24 @@ final class SelectionTranslationController: NSObject, NSPopoverDelegate {
     /// 仅左键按下期间的选区变化才标记待评估:排除键盘改选等无 mouseUp 跟随的路径,
     /// 避免陈旧标记在之后某次无关点击时突然弹泡。
     private func markPendingIfDragging() {
-        if NSEvent.pressedMouseButtons & 0x1 != 0 {
-            pendingEvaluation = true
+        evaluationGate.selectionChanged(isDragging: NSEvent.pressedMouseButtons & 0x1 != 0)
+    }
+
+    private func handleTextSelectionChanged() {
+        let hasSelection = (textView?.selectedRange().length ?? 0) > 0
+        let action = evaluationGate.textSelectionChanged(
+            isDragging: NSEvent.pressedMouseButtons & 0x1 != 0,
+            hasSelection: hasSelection
+        )
+        switch action {
+        case .none:
+            break
+        case .evaluate:
+            Task { [weak self] in
+                self?.evaluateSelection()
+            }
+        case .close:
+            closeBubble()
         }
     }
 
@@ -236,7 +252,7 @@ final class SelectionTranslationController: NSObject, NSPopoverDelegate {
     private func installEventMonitorIfNeeded() {
         guard eventMonitor == nil else { return }
         // 本地监听回调总在主线程(事件派发线程),assumeIsolated 安全。
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp, .scrollWheel]) { [weak self] event in
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp, .leftMouseDragged, .scrollWheel]) { [weak self] event in
             MainActor.assumeIsolated {
                 self?.handle(event)
             }
@@ -252,10 +268,12 @@ final class SelectionTranslationController: NSObject, NSPopoverDelegate {
                event.window !== popover.contentViewController?.view.window {
                 closeBubble()
             }
+        case .leftMouseDragged:
+            if event.window === hostView?.window {
+                evaluationGate.mouseDraggedInHost()
+            }
         case .leftMouseUp:
-            guard pendingEvaluation else { return }
-            pendingEvaluation = false
-            guard event.window === hostView?.window else { return }
+            guard evaluationGate.consumeMouseUp(inHostWindow: event.window === hostView?.window) else { return }
             // 本地监听先于事件派发触发;等本轮事件送达视图、选区落定后再评估
             // (Task 继承 MainActor,排到当前事件处理之后执行)。
             Task { [weak self] in

@@ -1,44 +1,6 @@
 import SwiftUI
 import PDFLabCore
 
-struct SettingsServiceDescriptor: Identifiable, Equatable {
-    enum Configuration: Equatable {
-        case none
-        case apiKey
-    }
-
-    var id: String
-    var systemImage: String
-    var configuration: Configuration
-
-    static let all: [SettingsServiceDescriptor] = AppState.engineIDs.map { id in
-        SettingsServiceDescriptor(
-            id: id,
-            systemImage: Self.systemImage(for: id),
-            configuration: id == "llm" ? .apiKey : .none
-        )
-    }
-
-    static func descriptor(for id: String) -> SettingsServiceDescriptor? {
-        all.first { $0.id == id }
-    }
-
-    func enabledBadge(isCurrent: Bool) -> String? {
-        isCurrent ? L10n.t("settings.service.enabled") : nil
-    }
-
-    private static func systemImage(for id: String) -> String {
-        switch id {
-        case "apple": return "apple.logo"
-        case "llm": return "sparkles"
-        case "google": return "g.circle"
-        case "deepl": return "d.circle"
-        case "youdao": return "character.book.closed"
-        default: return "globe"
-        }
-    }
-}
-
 /// 设置面板(`Settings` scene):外观 / 界面语言 / 翻译引擎 / 数据管理。
 struct SettingsView: View {
     private enum TestState: Equatable {
@@ -275,7 +237,7 @@ struct SettingsView: View {
 
             ScrollView {
                 LazyVStack(spacing: 2) {
-                    ForEach(SettingsServiceDescriptor.all) { service in
+                    ForEach(TranslationEngineDescriptor.all) { service in
                         serviceRow(service)
                     }
                 }
@@ -302,7 +264,7 @@ struct SettingsView: View {
         )
     }
 
-    private func serviceRow(_ service: SettingsServiceDescriptor) -> some View {
+    private func serviceRow(_ service: TranslationEngineDescriptor) -> some View {
         let isCurrent = app.engineID == service.id
 
         return Button {
@@ -346,7 +308,7 @@ struct SettingsView: View {
     }
 
     private var serviceDetail: some View {
-        let service = SettingsServiceDescriptor.descriptor(for: app.engineID) ?? SettingsServiceDescriptor.all[0]
+        let service = TranslationEngineDescriptor.descriptor(for: app.engineID) ?? TranslationEngineDescriptor.all[0]
 
         return Group {
             switch service.configuration {
@@ -358,7 +320,7 @@ struct SettingsView: View {
         }
     }
 
-    private func serviceEmptyState(_ service: SettingsServiceDescriptor) -> some View {
+    private func serviceEmptyState(_ service: TranslationEngineDescriptor) -> some View {
         VStack(spacing: 12) {
             Image(systemName: service.systemImage)
                 .font(.system(size: 32, weight: .medium))
@@ -370,7 +332,7 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func llmServicePanel(_ service: SettingsServiceDescriptor) -> some View {
+    private func llmServicePanel(_ service: TranslationEngineDescriptor) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 10) {
                 Image(systemName: service.systemImage)
