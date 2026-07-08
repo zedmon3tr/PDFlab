@@ -181,22 +181,7 @@ struct ViewerView: View {
         paragraphClick: ParagraphClickConfiguration?,
         pageContext: ParagraphPageContextConfiguration?
     ) -> some View {
-        if !paragraphTranslations.isEmpty {
-            HStack(spacing: 0) {
-                SingleDocumentView(
-                    document: document,
-                    readingLayout: readingLayout,
-                    translation: app.viewerTranslation,
-                    paragraphClick: paragraphClick,
-                    pageContext: pageContext
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                Divider()
-                TranslationSidebar(entries: paragraphTranslations, onClear: clearSidebarTranslations)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
+        HStack(spacing: 0) {
             SingleDocumentView(
                 document: document,
                 readingLayout: readingLayout,
@@ -205,7 +190,13 @@ struct ViewerView: View {
                 pageContext: pageContext
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if !paragraphTranslations.isEmpty {
+                Divider()
+                TranslationSidebar(entries: paragraphTranslations, onClear: clearSidebarTranslations)
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Chrome 式文档标签条
