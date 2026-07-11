@@ -6,7 +6,11 @@ import PDFLabCore
 
 struct ViewerView: View {
     static var openableContentTypes: [UTType] {
-        ViewerSecondaryDocumentPicker.allowedContentTypes
+        var types: [UTType] = [.pdf, .plainText]
+        if let markdown = UTType(filenameExtension: "md") {
+            types.append(markdown)
+        }
+        return types
     }
 
     let url: URL
@@ -21,9 +25,7 @@ struct ViewerView: View {
     @State private var secondary: ViewerDocument?
     @State private var layout: ViewerLayout = .single(.primary)
     @State private var readingLayout = ViewerReadingLayout.defaultLayout
-    @State private var zoomScale = 1.0
-    @State private var zoomRequest = ViewerZoomRequest.initial
-    @State private var lastFocusedSide: ViewerSide = .primary
+    @State private var zoomState = ViewerZoomState()
     @State private var ratioA = 1.0
     @State private var ratioB = 1.0
     @State private var alert: ViewerAlert?
@@ -47,6 +49,10 @@ struct ViewerView: View {
         VStack(spacing: 0) {
             documentTabBar
             Divider()
+            if showsSinglePDFControls {
+                singlePDFControls
+                Divider()
+            }
             viewerContent
         }
             .navigationTitle(primary?.title ?? url.lastPathComponent)
@@ -56,22 +62,6 @@ struct ViewerView: View {
                         ratioControl(L10n.t("viewer.leftRatio"), value: $ratioA)
                         ratioControl(L10n.t("viewer.rightRatio"), value: $ratioB)
                         resetRatioButton
-                    }
-                    if ViewerToolbarPolicy.showsReadingLayoutControl(
-                        currentDocumentKind: currentSingleDocument?.kind,
-                        isSideBySide: effectiveLayout == .sideBySide
-                    ) {
-                        readingLayoutControl
-                    }
-                    if ViewerToolbarPolicy.showsZoomControl(
-                        currentDocumentKind: currentSingleDocument?.kind,
-                        isSideBySide: effectiveLayout == .sideBySide
-                    ) {
-                        zoomControl
-                    }
-                    // 两文档打开时始终显示单看↔并排分段开关(用于随时切回并排)。
-                    if secondary != nil {
-                        viewModeToggle
                     }
                 }
             }
@@ -121,7 +111,7 @@ struct ViewerView: View {
     /// 有效布局:处理边界(secondary 缺失时任何指向 secondary 的布局都退回单看 primary)。
     private var effectiveLayout: ViewerLayout {
         switch layout {
-        case .sideBySide where secondary == nil:
+        case .sideBySide where !comparisonEnabled:
             return .single(.primary)
         case .single(.secondary) where secondary == nil:
             return .single(.primary)
@@ -169,7 +159,7 @@ struct ViewerView: View {
             document: document,
             readingLayout: readingLayout,
             zoomScale: pdfZoomScale,
-            zoomRequest: zoomRequest
+            zoomRequest: zoomState.request
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -204,9 +194,19 @@ struct ViewerView: View {
                         .font(.callout.weight(.medium))
                 }
                 .buttonStyle(HoverButtonStyle(variant: .toolbar))
+                .accessibilityLabel(L10n.t("viewer.addTab"))
                 .help(L10n.t("viewer.addTab"))
             }
             Spacer()
+            Button {
+                layout = .sideBySide
+            } label: {
+                Label(L10n.t("viewer.sideBySide"), systemImage: "rectangle.split.2x1")
+            }
+            .buttonStyle(HoverButtonStyle(variant: .toolbar))
+            .disabled(!comparisonEnabled || effectiveLayout == .sideBySide)
+            .accessibilityLabel(L10n.t("viewer.sideBySide"))
+            .help(comparisonEnabled ? L10n.t("viewer.sideBySide") : L10n.t("viewer.sideBySide.disabled"))
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -224,7 +224,6 @@ struct ViewerView: View {
     }
 
     private func focus(_ side: ViewerSide) {
-        lastFocusedSide = side
         layout = .single(side)
     }
 
@@ -291,38 +290,6 @@ struct ViewerView: View {
         ratioB = 1.0
     }
 
-    /// 单看 ↔ 并排分段开关(工具栏,仅两文档打开时显示)。
-    /// 选"并排" → sideBySide;选"单看" → 回到上次聚焦的一侧(默认 primary)。
-    private var viewModeToggle: some View {
-        Picker(L10n.t("viewer.viewMode"), selection: viewModeBinding) {
-            Image(systemName: "doc")
-                .help(L10n.t("viewer.modeSingle"))
-                .tag(ViewMode.single)
-            Image(systemName: "rectangle.split.2x1")
-                .help(L10n.t("viewer.modeSideBySide"))
-                .tag(ViewMode.sideBySide)
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .fixedSize()
-        .help(L10n.t("viewer.viewMode"))
-    }
-
-    /// 分段开关当前值 ↔ layout 的绑定。当前值反映 effectiveLayout。
-    private var viewModeBinding: Binding<ViewMode> {
-        Binding(
-            get: { effectiveLayout == .sideBySide ? .sideBySide : .single },
-            set: { newValue in
-                switch newValue {
-                case .sideBySide:
-                    layout = .sideBySide
-                case .single:
-                    layout = .single(lastFocusedSide)
-                }
-            }
-        )
-    }
-
     private var currentSingleDocument: ViewerDocument? {
         switch effectiveLayout {
         case .single(.primary):
@@ -334,18 +301,36 @@ struct ViewerView: View {
         }
     }
 
+    private var comparisonEnabled: Bool {
+        ViewerComparisonPolicy.isEnabled(
+            primaryKind: primary?.kind,
+            secondaryKind: secondary?.kind
+        )
+    }
+
     private var pdfZoomScale: Binding<Double> {
         Binding(
-            get: { zoomScale },
-            set: { observedScale in
-                guard let request = zoomRequest.updatingForObservedScale(
-                    observedScale,
-                    currentScale: zoomScale
-                ) else { return }
-                zoomScale = ViewerZoom.clampedScale(observedScale)
-                zoomRequest = request
-            }
+            get: { zoomState.scale },
+            set: { zoomState.observe($0) }
         )
+    }
+
+    private var showsSinglePDFControls: Bool {
+        ViewerToolbarPolicy.showsZoomControl(
+            currentDocumentKind: currentSingleDocument?.kind,
+            isSideBySide: effectiveLayout == .sideBySide
+        )
+    }
+
+    private var singlePDFControls: some View {
+        HStack(spacing: 12) {
+            zoomControl
+            Spacer()
+            readingLayoutControl
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.quaternary.opacity(0.18))
     }
 
     private var readingLayoutControl: some View {
@@ -382,7 +367,7 @@ struct ViewerView: View {
                 Button(L10n.t("viewer.zoomFitWidth")) { setZoom(.fitWidth) }
                 Button(L10n.t("viewer.zoomFitHeight")) { setZoom(.fitHeight) }
             } label: {
-                Text(ViewerZoom.percentLabel(for: zoomScale))
+                Text(ViewerZoom.percentLabel(for: zoomState.scale))
                     .monospacedDigit()
                     .frame(minWidth: 52)
             }
@@ -399,14 +384,11 @@ struct ViewerView: View {
     }
 
     private func changeZoom(by delta: Double) {
-        setZoom(.scale(ViewerZoom.clampedScale(zoomScale + delta)))
+        setZoom(.scale(ViewerZoom.clampedScale(zoomState.scale + delta)))
     }
 
     private func setZoom(_ action: ViewerZoomAction) {
-        if case .scale(let scale) = action {
-            zoomScale = ViewerZoom.clampedScale(scale)
-        }
-        zoomRequest = ViewerZoomRequest(action: action, revision: zoomRequest.revision + 1)
+        zoomState.command(action)
     }
 
     // macOS 工具栏常不渲染 Stepper 的 label,数值必须用独立 Text 显式呈现。
@@ -442,6 +424,10 @@ struct ViewerView: View {
         load(url, side: .primary)
         if let secondaryURL {
             load(secondaryURL, side: .secondary)
+            // A pre-supplied pair (for example translation output) explicitly requests comparison.
+            if secondary != nil {
+                layout = .sideBySide
+            }
         }
     }
 
@@ -507,8 +493,7 @@ struct ViewerView: View {
             // 每次进入/更换对照文档时把滚动比例恢复默认,不带上次残留值。
             resetRatios()
             secondary = document
-            // 加第二个文档的意图即对照:立即并排。
-            layout = .sideBySide
+            layout = .single(.secondary)
         }
     }
 
@@ -567,12 +552,6 @@ private enum ViewerLayout: Equatable {
     case sideBySide
 }
 
-/// 工具栏分段开关的两段:单看 / 并排(不携带聚焦侧,切回单看时用 lastFocusedSide)。
-private enum ViewMode: Hashable {
-    case single
-    case sideBySide
-}
-
 enum ViewerToolbarPolicy {
     /// 对照阅读两栏各自连续滚动并由同步控制器协调,本次单文档布局/缩放控件不参与。
     static func showsReadingLayoutControl(currentDocumentKind: ViewerDocumentKind?, isSideBySide: Bool) -> Bool {
@@ -581,6 +560,15 @@ enum ViewerToolbarPolicy {
 
     static func showsZoomControl(currentDocumentKind: ViewerDocumentKind?, isSideBySide: Bool) -> Bool {
         currentDocumentKind == .pdf && !isSideBySide
+    }
+}
+
+enum ViewerComparisonPolicy {
+    static func isEnabled(
+        primaryKind: ViewerDocumentKind?,
+        secondaryKind: ViewerDocumentKind?
+    ) -> Bool {
+        primaryKind == .pdf && secondaryKind == .pdf
     }
 }
 

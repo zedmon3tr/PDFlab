@@ -41,16 +41,30 @@ struct ViewerZoomRequest: Equatable {
 
     static let initial = ViewerZoomRequest(action: .scale(1), revision: 0)
 
-    func updatingForObservedScale(_ observedScale: Double, currentScale: Double) -> Self? {
-        let scale = ViewerZoom.clampedScale(observedScale)
-        guard abs(scale - currentScale) > 0.0001 else { return nil }
-        return Self(action: .scale(scale), revision: revision + 1)
+}
+
+/// PDFView is the source of truth for observed zoom. UI commands travel in the
+/// opposite direction through `request`, so trackpad gestures never echo back as commands.
+struct ViewerZoomState: Equatable {
+    var scale = 1.0
+    var request = ViewerZoomRequest.initial
+
+    mutating func observe(_ observedScale: Double) {
+        scale = ViewerZoom.clampedScale(observedScale)
+    }
+
+    mutating func command(_ action: ViewerZoomAction) {
+        if case .scale(let requestedScale) = action {
+            scale = ViewerZoom.clampedScale(requestedScale)
+        }
+        request = ViewerZoomRequest(action: action, revision: request.revision + 1)
     }
 }
 
 final class PDFZoomController {
     private var lastRequestRevision: Int?
-    private var observation: NSKeyValueObservation?
+    private weak var observedView: PDFView?
+    private var scaleObserver: NSObjectProtocol?
     private var isApplying = false
 
     func apply(
@@ -84,14 +98,28 @@ final class PDFZoomController {
     }
 
     private func observe(_ pdfView: PDFView, scale: Binding<Double>) {
-        guard observation == nil else { return }
-        observation = pdfView.observe(\.scaleFactor, options: [.new]) { [weak self] view, _ in
-            guard self?.isApplying == false else { return }
-            DispatchQueue.main.async {
-                scale.wrappedValue = Double(view.scaleFactor)
-            }
+        guard observedView !== pdfView else { return }
+        stopObserving()
+        observedView = pdfView
+        scaleObserver = NotificationCenter.default.addObserver(
+            forName: .PDFViewScaleChanged,
+            object: pdfView,
+            queue: .main
+        ) { [weak self, weak pdfView] _ in
+            guard let self, !self.isApplying, let pdfView else { return }
+            scale.wrappedValue = Double(pdfView.scaleFactor)
         }
     }
+
+    private func stopObserving() {
+        if let scaleObserver {
+            NotificationCenter.default.removeObserver(scaleObserver)
+        }
+        scaleObserver = nil
+        observedView = nil
+    }
+
+    deinit { stopObserving() }
 
     private func setScale(_ requestedScale: Double, on pdfView: PDFView) {
         pdfView.autoScales = false

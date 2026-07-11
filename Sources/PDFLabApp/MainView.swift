@@ -3,7 +3,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 import PDFLabCore
 
-/// 主界面:查看/翻译两张模块卡片 + 最近打开历史列表。
+/// 主界面:查看/翻译/转换三张模块卡片 + 最近打开历史列表。
 struct MainView: View {
     /// 导航目的地。翻译保存后的 viewer bridge 使用 `.viewerPair` 直接打开对照态。
     enum Destination: Hashable {
@@ -21,6 +21,8 @@ struct MainView: View {
 
     @State private var path: [Destination] = []
     @State private var historyState = MainHistoryState()
+    @State private var historyFileSizes: [String: String] = [:]
+    @State private var historySizeTask: Task<Void, Never>?
     @State private var pendingModule: PendingModule?
     @State private var showFileImporter = false
     @State private var translateDialog: TranslateDialogRequest?
@@ -29,41 +31,58 @@ struct MainView: View {
 
     var body: some View {
         NavigationStack(path: $path) {
-            HStack(spacing: 0) {
-                historySidebar
-                Divider()
-                moduleArea
-            }
-            .navigationTitle(L10n.t("app.name"))
-            .toolbar {
-                ToolbarItem(placement: .navigation) {
-                    Button {
-                        app.presentSettingsIfIdle()
-                    } label: {
-                        Image(systemName: "gearshape")
-                    }
-                    .help(L10n.t("settings.open.help"))
-                }
-            }
+            moduleArea
             .navigationDestination(for: Destination.self) { destination in
                 switch destination {
                 case .viewer(let url):
                     ViewerView(url: url) { openedURL in
-                        historyState.viewerDidOpen(openedURL, history: app.history)
+                        viewerDidOpen(openedURL)
                     } onClose: {
                         popViewer()
                     }
                 case .viewerPair(let sourceURL, let outputURL):
                     ViewerView(url: sourceURL, secondaryURL: outputURL) { openedURL in
-                        historyState.viewerDidOpen(openedURL, history: app.history)
+                        viewerDidOpen(openedURL)
                     } onClose: {
                         popViewer()
                     }
                 }
             }
         }
+        .toolbar {
+            ToolbarItemGroup(placement: .navigation) {
+                Button {
+                    if HomeToolbarPolicy.logoAction(hasNavigationPath: !path.isEmpty) == .returnHome {
+                        path.removeAll()
+                    }
+                } label: {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(L10n.t("app.name"))
+                .help(L10n.t("app.name"))
+
+                if HomeToolbarPolicy.showsAddDocument(hasNavigationPath: !path.isEmpty) {
+                    Button {
+                        pendingModule = .viewer
+                        showFileImporter = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel(L10n.t("viewer.addTab"))
+                    .help(L10n.t("viewer.addTab"))
+                }
+            }
+        }
         .background(MainWindowResizeControl(isResizeEnabled: translateDialog == nil && !app.settingsPresented))
         .onAppear { reloadHistory() }
+        .onDisappear {
+            historySizeTask?.cancel()
+            historySizeTask = nil
+        }
         // 设置 sheet 清空历史后广播 historyRevision,主界面据此重载缓存列表。
         .onChange(of: app.historyRevision) { reloadHistory() }
         // 翻译面板占用主窗口 sheet 位时,⌘, 打开设置的请求被 AppState 守卫忽略,
@@ -141,19 +160,21 @@ struct MainView: View {
         }
     }
 
-    // MARK: - 模块卡片(右侧主内容区)
+    // MARK: - 模块与最近打开
 
     private var moduleArea: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 28) {
             moduleCards
-            Spacer()
+            historySection
         }
-        .padding(28)
+        .padding(.horizontal, HomeLayout.horizontalInset)
+        .padding(.top, HomeLayout.topInset)
+        .padding(.bottom, 28)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var moduleCards: some View {
-        HStack(spacing: 20) {
+        HStack(spacing: HomeLayout.moduleCardSpacing) {
             moduleCard(
                 title: L10n.t("main.view"),
                 subtitle: L10n.t("main.view.subtitle"),
@@ -170,6 +191,12 @@ struct MainView: View {
                 pendingModule = .translate
                 showFileImporter = true
             }
+            moduleCard(
+                title: L10n.t("main.convert"),
+                subtitle: L10n.t("main.convert.subtitle"),
+                systemImage: "arrow.triangle.2.circlepath.doc.on.clipboard",
+                isEnabled: false
+            ) {}
         }
     }
 
@@ -177,35 +204,49 @@ struct MainView: View {
         title: String,
         subtitle: String,
         systemImage: String,
+        isEnabled: Bool = true,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 30, weight: .medium))
+                    .font(.system(size: 22, weight: .medium))
                     .foregroundStyle(.tint)
-                Text(title)
-                    .font(.title2.weight(.semibold))
-                Text(subtitle)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .frame(width: HomeLayout.moduleIconSize, height: HomeLayout.moduleIconSize)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text(title)
+                            .font(.callout.weight(.semibold))
+                        if !isEnabled {
+                            Text(L10n.t("main.convert.disabled"))
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(20)
-            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
-            .hoverHighlight()
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, minHeight: HomeLayout.moduleCardHeight, maxHeight: HomeLayout.moduleCardHeight, alignment: .leading)
+            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+            .modifier(ModuleCardInteraction(isEnabled: isEnabled))
         }
         .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .help(isEnabled ? title : L10n.t("main.convert.disabled"))
     }
 
-    // MARK: - 历史列表(左侧固定侧边栏)
-
-    private var historySidebar: some View {
+    private var historySection: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text(L10n.t("history.title"))
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
+                    .font(.callout)
 
                 Spacer()
 
@@ -219,44 +260,44 @@ struct MainView: View {
                 .disabled(historyState.entries.isEmpty)
                 .help(L10n.t("history.clear"))
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 16)
 
             if historyState.entries.isEmpty {
                 Text(L10n.t("history.empty"))
                     .font(.callout)
                     .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                    .padding(.horizontal, 16)
+                    .frame(maxWidth: .infinity, minHeight: 120, alignment: .center)
             } else {
-                List(historyState.entries, id: \.path) { entry in
-                    historyRow(entry)
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(historyState.entries, id: \.path) { entry in
+                            historyRow(entry)
+                        }
+                    }
                 }
-                .listStyle(.inset)
-                .scrollContentBackground(.hidden)
+                .frame(minHeight: 180)
             }
         }
-        .frame(width: 260)
-        .frame(maxHeight: .infinity, alignment: .topLeading)
-        .background(.quaternary.opacity(0.25))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func historyRow(_ entry: HistoryEntry) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(entry.fileName)
-                    .lineLimit(2)
-                    .truncationMode(.tail)
-                Text(entry.path)
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            Spacer()
+        HStack(spacing: 16) {
+            Text(entry.fileName)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(HomeHistoryPresentation.formatOpenedAt(entry.openedAt))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(width: HomeLayout.historyOpenedColumnWidth, alignment: .leading)
+            Text(historyFileSizes[entry.path] ?? L10n.t("history.sizeUnknown"))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(width: HomeLayout.historySizeColumnWidth, alignment: .leading)
         }
+        .font(.callout)
+        .frame(height: HomeLayout.historyRowHeight)
         .contentShape(Rectangle())
-        .padding(8)
         .hoverHighlight()
         .onTapGesture { openHistoryEntry(entry) }
         .contextMenu {
@@ -277,10 +318,51 @@ struct MainView: View {
 
     private func reloadHistory() {
         historyState.reload(history: app.history)
+        reloadHistoryFileSizes()
+    }
+
+    private func viewerDidOpen(_ url: URL) {
+        historyState.viewerDidOpen(url, history: app.history)
+        reloadHistoryFileSizes()
     }
 
     private func clearHistory() {
         historyState.clear(history: app.history)
+        historySizeTask?.cancel()
+        historySizeTask = nil
+        historyFileSizes = [:]
+    }
+
+    private func reloadHistoryFileSizes() {
+        historySizeTask?.cancel()
+        let paths = historyState.entries.map(\.path)
+        let retained = historyFileSizes.filter { paths.contains($0.key) }
+        historyFileSizes = retained
+
+        historySizeTask = Task {
+            let worker = Task.detached(priority: .utility) {
+                var result: [String: String] = [:]
+                for path in paths {
+                    guard !Task.isCancelled else { return result }
+                    let url = URL(fileURLWithPath: path)
+                    if let byteCount = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize {
+                        result[path] = ByteCountFormatter.string(
+                            fromByteCount: Int64(byteCount),
+                            countStyle: .file
+                        )
+                    }
+                }
+                return result
+            }
+            let sizes = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard !Task.isCancelled,
+                  historyState.entries.map(\.path) == paths else { return }
+            historyFileSizes = sizes
+        }
     }
 
     private func open(url: URL) {
@@ -301,6 +383,19 @@ struct MainView: View {
             return
         }
         path.append(.viewer(url))
+    }
+}
+
+private struct ModuleCardInteraction: ViewModifier {
+    var isEnabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.hoverHighlight()
+        } else {
+            content.opacity(0.55)
+        }
     }
 }
 

@@ -27,15 +27,61 @@ struct MainHistoryState: Equatable {
     }
 }
 
+/// Home 使用 Figma 1:2 的紧凑比例；数值集中在这里，避免三个入口各自漂移。
+enum HomeLayout {
+    static let horizontalInset: CGFloat = 40
+    static let topInset: CGFloat = 22
+    static let moduleCardHeight: CGFloat = 64
+    static let moduleCardSpacing: CGFloat = 10
+    static let moduleIconSize: CGFloat = 32
+    /// 900pt 最小窗口：扣除两侧40、两段10、卡片内边距32、icon32与间距8后的单卡文字宽度。
+    static let minimumModuleTextWidth: CGFloat = 194
+    static let historyRowHeight: CGFloat = 40
+    static let historyOpenedColumnWidth: CGFloat = 120
+    static let historySizeColumnWidth: CGFloat = 90
+}
+
+enum HomeModulePresentation {
+    static func fitsCompactSingleLine(
+        _ text: String,
+        availableWidth: CGFloat = HomeLayout.minimumModuleTextWidth
+    ) -> Bool {
+        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize(for: .small), weight: .regular)
+        let measured = (text as NSString).size(withAttributes: [.font: font]).width
+        return measured <= availableWidth
+    }
+}
+
+enum HomeHistoryPresentation {
+    static let showsLeadingIcon = false
+
+    static func formatOpenedAt(_ date: Date, timeZone: TimeZone = .current) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: date)
+    }
+}
+
+enum HomeToolbarAction: Equatable {
+    case none
+    case returnHome
+}
+
+enum HomeToolbarPolicy {
+    static func logoAction(hasNavigationPath: Bool) -> HomeToolbarAction {
+        hasNavigationPath ? .returnHome : .none
+    }
+
+    static func showsAddDocument(hasNavigationPath: Bool) -> Bool {
+        !hasNavigationPath
+    }
+}
+
 enum ViewerSecondaryDocumentPicker {
     static var allowedContentTypes: [UTType] {
-        var types: [UTType] = [.pdf, .plainText]
-        for ext in ["md"] {
-            if let type = UTType(filenameExtension: ext) {
-                types.append(type)
-            }
-        }
-        return types
+        [.pdf]
     }
 
     @MainActor

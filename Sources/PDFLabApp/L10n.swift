@@ -10,6 +10,12 @@ enum L10n {
         return isChinese ? pair.zh : pair.en
     }
 
+    /// 布局测试同时验证两套正式文案，不依赖测试机当前语言。
+    static func allLocalizedValues(_ key: String) -> [String] {
+        guard let pair = strings[key] else { return [key] }
+        return [pair.zh, pair.en]
+    }
+
     /// PDFLabError → 用户可读文案(带关联值上下文)。
     static func message(for error: PDFLabError) -> String {
         switch error {
@@ -44,14 +50,18 @@ enum L10n {
         "main.view.subtitle": ("打开 PDF,本地中英对照阅读", "Open a PDF for side-by-side reading"),
         "main.translate": ("翻译", "Translate"),
         "main.translate.subtitle": ("翻译整份 PDF 并导出", "Translate a whole PDF and export"),
+        "main.convert": ("转换", "Convert"),
+        "main.convert.subtitle": ("PDF、Markdown、Word 格式转换", "Convert PDF, Markdown, and Word"),
+        "main.convert.disabled": ("功能规划中", "Coming soon"),
 
         // 查看模块
         "viewer.addTab": ("再打开一个文档", "Open another document"),
         "viewer.closeTab": ("关闭", "Close"),
-        "viewer.sideBySide": ("并排对照", "Side by Side"),
+        "viewer.sideBySide": ("对照浏览", "Compare"),
+        "viewer.sideBySide.disabled": ("打开两个 PDF 后可使用对照浏览", "Open two PDFs to compare"),
         "viewer.viewMode": ("视图模式", "View Mode"),
         "viewer.modeSingle": ("单看", "Single"),
-        "viewer.modeSideBySide": ("并排", "Side by Side"),
+        "viewer.modeSideBySide": ("对照浏览", "Compare"),
         "viewer.pageLayout": ("页面布局", "Page Layout"),
         "viewer.layoutTwoPage": ("双页并排查看", "Two-Page Continuous"),
         "viewer.layoutContinuous": ("滚动查看", "Continuous"),
@@ -126,7 +136,7 @@ enum L10n {
         "translate.save": ("保存", "Save"),
         "translate.backToOptions": ("返回选项", "Back to Options"),
         "translate.saved.title": ("已保存", "Saved"),
-        "translate.openInViewer": ("立即对照查看", "Open Side by Side"),
+        "translate.openInViewer": ("对照浏览", "Compare"),
         "translate.saveAgain": ("重新保存", "Save Again"),
         "translate.newFile": ("新文件", "New File"),
         "translate.failed": ("翻译失败", "Translation Failed"),
@@ -141,6 +151,7 @@ enum L10n {
         "history.title": ("最近打开", "Recent Files"),
         "history.empty": ("暂无最近打开的文件", "No recent files"),
         "history.clear": ("清空历史", "Clear History"),
+        "history.sizeUnknown": ("大小未知", "Unknown size"),
         "history.remove": ("从列表中移除", "Remove from List"),
         "history.missing": ("文件已被移动或删除", "The file has been moved or deleted"),
         "history.missing.remove": ("移除记录", "Remove Entry"),
