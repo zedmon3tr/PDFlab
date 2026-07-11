@@ -31,12 +31,14 @@ struct MainHistoryState: Equatable {
 enum HomeLayout {
     static let horizontalInset: CGFloat = 40
     static let topInset: CGFloat = 22
-    static let moduleCardHeight: CGFloat = 64
+    static let moduleCardHeight: CGFloat = 76
     static let moduleCardSpacing: CGFloat = 10
     static let moduleIconSize: CGFloat = 32
     /// 900pt 最小窗口：扣除两侧40、两段10、卡片内边距32、icon32与间距8后的单卡文字宽度。
     static let minimumModuleTextWidth: CGFloat = 194
     static let historyRowHeight: CGFloat = 40
+    /// 历史行内容与 hover 高亮框边缘的水平内边距(DESIGN.md 间距尺度)。
+    static let historyRowHorizontalPadding: CGFloat = 12
     static let historyOpenedColumnWidth: CGFloat = 120
     static let historySizeColumnWidth: CGFloat = 90
 }
@@ -46,7 +48,8 @@ enum HomeModulePresentation {
         _ text: String,
         availableWidth: CGFloat = HomeLayout.minimumModuleTextWidth
     ) -> Bool {
-        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize(for: .small), weight: .regular)
+        // 必须与卡片副文案的实际字体一致(SwiftUI .callout)。
+        let font = NSFont.preferredFont(forTextStyle: .callout)
         let measured = (text as NSString).size(withAttributes: [.font: font]).width
         return measured <= availableWidth
     }
@@ -70,12 +73,14 @@ enum HomeToolbarAction: Equatable {
 }
 
 enum HomeToolbarPolicy {
-    static func logoAction(hasNavigationPath: Bool) -> HomeToolbarAction {
-        hasNavigationPath ? .returnHome : .none
+    /// 浏览器语义:查看器前置时点 logo 回首页(会话保留);已在首页则不动。
+    static func logoAction(isViewerVisible: Bool) -> HomeToolbarAction {
+        isViewerVisible ? .returnHome : .none
     }
 
-    static func showsAddDocument(hasNavigationPath: Bool) -> Bool {
-        !hasNavigationPath
+    /// "+" 只受会话容量约束(最多 2 个文档),首页与查看器同一套标签条。
+    static func showsAddDocument(isSessionFull: Bool) -> Bool {
+        !isSessionFull
     }
 }
 

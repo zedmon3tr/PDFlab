@@ -34,7 +34,21 @@ struct DualPaneView: View {
     var right: ViewerDocument
     var ratioA: Double
     var ratioB: Double
-    var readingLayout: ViewerReadingLayout
+    var readingLayout: ViewerReadingLayout = .defaultLayout
+
+    /// Side-by-side comparison panes are ALWAYS continuous, regardless of whatever
+    /// `readingLayout` the user picked while viewing a single document. The reading-layout
+    /// picker is deliberately hidden in side-by-side mode (`ViewerToolbarPolicy
+    /// .showsReadingLayoutControl`), but the underlying preference value persists across
+    /// mode switches, so a paginated layout carried over from single-document mode would
+    /// otherwise silently break sync-scroll here: a paginated PDFView has near-zero
+    /// scrollable content height per page (sync math's `maxOffset > 0` guard bails out) and
+    /// page-turns don't fire `boundsDidChangeNotification`, which the sync coordinator
+    /// exclusively listens to. Ignores `preference` entirely by design — kept as a parameter
+    /// only so the call sites below read as an explicit, intentional override.
+    static func paneReadingLayout(for preference: ViewerReadingLayout) -> ViewerReadingLayout {
+        .continuous
+    }
 
     /// 左栏占比(0...1),拖动分隔条时更新。
     @State private var dividerFraction: CGFloat = 0.5
@@ -51,20 +65,6 @@ struct DualPaneView: View {
         minPaneWidth: minPaneWidth
     )
 
-    /// Side-by-side comparison panes are ALWAYS continuous, regardless of whatever
-    /// `readingLayout` the user picked while viewing a single document. The reading-layout
-    /// picker is deliberately hidden in side-by-side mode (`ViewerToolbarPolicy
-    /// .showsReadingLayoutControl`), but the underlying preference value persists across
-    /// mode switches, so a paginated layout carried over from single-document mode would
-    /// otherwise silently break sync-scroll here: a paginated PDFView has near-zero
-    /// scrollable content height per page (sync math's `maxOffset > 0` guard bails out) and
-    /// page-turns don't fire `boundsDidChangeNotification`, which the sync coordinator
-    /// exclusively listens to. Ignores `preference` entirely by design — kept as a parameter
-    /// only so the call sites below read as an explicit, intentional override.
-    static func paneReadingLayout(for preference: ViewerReadingLayout) -> ViewerReadingLayout {
-        .continuous
-    }
-
     var body: some View {
         GeometryReader { geo in
             let width = geo.size.width
@@ -79,9 +79,7 @@ struct DualPaneView: View {
                     sync: sync,
                     // Dual-pane sync-scroll fundamentally requires continuous, non-paginated
                     // PDFViews (see DualPaneView.paneReadingLayout(for:) doc). The
-                    // `readingLayout` preference is intentionally NOT threaded through as-is
-                    // here — it only applies to single-document viewing, where its picker is
-                    // actually shown.
+                    // `readingLayout` preference is intentionally NOT threaded through as-is.
                     readingLayout: Self.paneReadingLayout(for: readingLayout)
                 )
                     .frame(width: leftWidth)
@@ -215,8 +213,9 @@ private struct SinglePaneRepresentable: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         // 文档不变时无需重建;文档本身随 ViewerView 的 sideBySide 切换携带,identity 变化会触发新的 makeNSView。
-        context.coordinator.apply(readingLayout)
         context.coordinator.refresh()
+        // 幂等重申强制 continuous(apply 内部值不变时不触 PDFKit setter)。
+        context.coordinator.apply(readingLayout)
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
@@ -304,9 +303,8 @@ private struct SinglePaneRepresentable: NSViewRepresentable {
         }
 
         func apply(_ readingLayout: ViewerReadingLayout) {
-            if let pdfView {
-                readingLayout.apply(to: pdfView)
-            }
+            guard let pdfView else { return }
+            readingLayout.apply(to: pdfView)
         }
 
         func detach() {

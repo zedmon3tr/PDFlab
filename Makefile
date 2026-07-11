@@ -4,6 +4,9 @@ FW  := /Library/Developer/CommandLineTools/Library/Developer/Frameworks
 TESTFLAGS := -Xswiftc -F$(FW) -Xlinker -F$(FW) -Xlinker -rpath -Xlinker $(FW)
 build: ; $(DEV) swift build
 test:  ; $(DEV) swift test $(TESTFLAGS)
-run:   ; $(DEV) swift run PDFLabApp
+run: bundle
+	-pkill -x PDFLabApp
+	-pkill -x PDFlab
+	open -n dist/PDFlab.app
 bundle:; bash scripts/bundle_app.sh
 dmg: bundle ; bash scripts/make_dmg.sh

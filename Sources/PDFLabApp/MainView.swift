@@ -4,13 +4,11 @@ import UniformTypeIdentifiers
 import PDFLabCore
 
 /// 主界面:查看/翻译/转换三张模块卡片 + 最近打开历史列表。
+///
+/// 浏览器 tab 语义:查看会话(ViewerSession)常驻,首页与查看器只是内容区切换
+/// (ZStack + opacity,查看器视图不销毁,滚动/缩放状态保留);
+/// 文档标签渲染收敛在这里的唯一 toolbar,首页也能点标签回查看器、点 × 关标签。
 struct MainView: View {
-    /// 导航目的地。翻译保存后的 viewer bridge 使用 `.viewerPair` 直接打开对照态。
-    enum Destination: Hashable {
-        case viewer(URL)
-        case viewerPair(URL, URL)
-    }
-
     /// 卡片点击后待执行的模块(决定选完文件去哪个目的地)。
     private enum PendingModule {
         case viewer
@@ -18,8 +16,9 @@ struct MainView: View {
     }
 
     @EnvironmentObject private var app: AppState
+    @Environment(\.colorScheme) private var colorScheme
 
-    @State private var path: [Destination] = []
+    @StateObject private var session = ViewerSession()
     @State private var historyState = MainHistoryState()
     @State private var historyFileSizes: [String: String] = [:]
     @State private var historySizeTask: Task<Void, Never>?
@@ -28,136 +27,317 @@ struct MainView: View {
     @State private var translateDialog: TranslateDialogRequest?
     @State private var missingEntry: HistoryEntry?
     @State private var launchUpdate: UpdateInfo?
+    @State private var passwordInput = ""
 
     var body: some View {
-        NavigationStack(path: $path) {
-            moduleArea
-            .navigationDestination(for: Destination.self) { destination in
-                switch destination {
-                case .viewer(let url):
-                    ViewerView(url: url) { openedURL in
-                        viewerDidOpen(openedURL)
-                    } onClose: {
-                        popViewer()
-                    }
-                case .viewerPair(let sourceURL, let outputURL):
-                    ViewerView(url: sourceURL, secondaryURL: outputURL) { openedURL in
-                        viewerDidOpen(openedURL)
-                    } onClose: {
-                        popViewer()
-                    }
+        content
+            // 不显示默认窗口标题("PDFLabApp" 字样)。
+            .navigationTitle("")
+            .toolbar { toolbarContent }
+            .background(MainWindowResizeControl(isResizeEnabled: translateDialog == nil && !app.settingsPresented))
+            .onAppear {
+                reloadHistory()
+                // 需求 3.1:历史只记录查看模块打开的主文件(会话只对 primary 回调)。
+                session.onRecordOpen = { url in
+                    app.history.record(url: url)
+                    viewerDidOpen(url)
                 }
             }
-        }
-        .toolbar {
-            ToolbarItemGroup(placement: .navigation) {
-                Button {
-                    if HomeToolbarPolicy.logoAction(hasNavigationPath: !path.isEmpty) == .returnHome {
-                        path.removeAll()
-                    }
-                } label: {
-                    Image(nsImage: NSApp.applicationIconImage)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: 20, height: 20)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(L10n.t("app.name"))
-                .help(L10n.t("app.name"))
-
-                if HomeToolbarPolicy.showsAddDocument(hasNavigationPath: !path.isEmpty) {
-                    Button {
-                        pendingModule = .viewer
-                        showFileImporter = true
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                    .accessibilityLabel(L10n.t("viewer.addTab"))
-                    .help(L10n.t("viewer.addTab"))
-                }
+            .onDisappear {
+                historySizeTask?.cancel()
+                historySizeTask = nil
             }
-        }
-        .background(MainWindowResizeControl(isResizeEnabled: translateDialog == nil && !app.settingsPresented))
-        .onAppear { reloadHistory() }
-        .onDisappear {
-            historySizeTask?.cancel()
-            historySizeTask = nil
-        }
-        // 设置 sheet 清空历史后广播 historyRevision,主界面据此重载缓存列表。
-        .onChange(of: app.historyRevision) { reloadHistory() }
-        // 翻译面板占用主窗口 sheet 位时,⌘, 打开设置的请求被 AppState 守卫忽略,
-        // 避免同层两个 sheet 争抢(settingsPresented 卡 true 后齿轮失效)。
-        .onChange(of: translateDialog?.id) { app.translateSheetActive = translateDialog != nil }
-        .fileImporter(
-            isPresented: $showFileImporter,
-            allowedContentTypes: pendingModule == .translate ? [.pdf] : ViewerView.openableContentTypes,
-            allowsMultipleSelection: false
-        ) { result in
-            guard case .success(let urls) = result, let url = urls.first else { return }
-            open(url: url)
-        }
-        .sheet(item: $translateDialog) { request in
-            TranslateFlowView(
-                url: request.url,
-                openInViewer: { sourceURL, outputURL in
-                    translateDialog = nil
-                    app.history.record(url: sourceURL)
-                    reloadHistory()
-                    path.append(.viewerPair(sourceURL, outputURL))
-                },
-                close: {
-                    translateDialog = nil
-                }
-            )
-            .environmentObject(app)
-            .frame(width: TranslateOptionsLayout.dialogWidth, height: TranslateOptionsLayout.dialogHeight)
-        }
-        // 设置面板:固定尺寸主窗口 sheet(替代已弃用的 Settings 独立窗口场景)。
-        .sheet(isPresented: $app.settingsPresented) {
-            SettingsView()
+            // 设置 sheet 清空历史后广播 historyRevision,主界面据此重载缓存列表。
+            .onChange(of: app.historyRevision) { reloadHistory() }
+            // 回到首页时刷新历史(查看会话期间可能新开过文档)。
+            .onChange(of: session.isViewerVisible) {
+                if !session.isViewerVisible { reloadHistory() }
+            }
+            // 翻译面板占用主窗口 sheet 位时,⌘, 打开设置的请求被 AppState 守卫忽略,
+            // 避免同层两个 sheet 争抢(settingsPresented 卡 true 后齿轮失效)。
+            .onChange(of: translateDialog?.id) { app.translateSheetActive = translateDialog != nil }
+            .fileImporter(
+                isPresented: $showFileImporter,
+                allowedContentTypes: pendingModule == .translate ? [.pdf] : ViewerView.openableContentTypes,
+                allowsMultipleSelection: false
+            ) { result in
+                guard case .success(let urls) = result, let url = urls.first else { return }
+                open(url: url)
+            }
+            .sheet(item: $translateDialog) { request in
+                TranslateFlowView(
+                    url: request.url,
+                    openInViewer: { sourceURL, outputURL in
+                        translateDialog = nil
+                        // 翻译完成"立即对照查看":整体替换会话并直接进对照。
+                        session.replacePair(source: sourceURL, output: outputURL)
+                    },
+                    close: {
+                        translateDialog = nil
+                    }
+                )
                 .environmentObject(app)
-        }
-        .alert(
-            L10n.t("history.missing"),
-            isPresented: Binding(
-                get: { missingEntry != nil },
-                set: { if !$0 { missingEntry = nil } }
-            )
-        ) {
-            Button(L10n.t("history.missing.remove"), role: .destructive) {
-                if let entry = missingEntry {
-                    app.history.remove(path: entry.path)
-                    reloadHistory()
+                .frame(width: TranslateOptionsLayout.dialogWidth, height: TranslateOptionsLayout.dialogHeight)
+            }
+            // 设置面板:固定尺寸主窗口 sheet(替代已弃用的 Settings 独立窗口场景)。
+            .sheet(isPresented: $app.settingsPresented) {
+                SettingsView()
+                    .environmentObject(app)
+            }
+            .alert(item: $session.alert) { item in
+                Alert(
+                    title: Text(item.title),
+                    message: Text(item.message),
+                    dismissButton: .default(Text(L10n.t("common.confirm")))
+                )
+            }
+            .alert(
+                L10n.t("viewer.password.title"),
+                isPresented: passwordAlertPresented
+            ) {
+                SecureField(L10n.t("viewer.password.prompt"), text: $passwordInput)
+                Button(L10n.t("viewer.password.open")) {
+                    let password = passwordInput
+                    passwordInput = ""
+                    session.submitPassword(password)
                 }
-                missingEntry = nil
+                Button(L10n.t("common.cancel"), role: .cancel) {
+                    session.cancelPasswordRequest()
+                    passwordInput = ""
+                }
+            } message: {
+                if let failure = session.passwordFailure {
+                    Text(failure)
+                } else {
+                    Text(session.passwordRequest?.url.lastPathComponent ?? "")
+                }
             }
-            Button(L10n.t("common.cancel"), role: .cancel) {
-                missingEntry = nil
+            .alert(
+                L10n.t("history.missing"),
+                isPresented: Binding(
+                    get: { missingEntry != nil },
+                    set: { if !$0 { missingEntry = nil } }
+                )
+            ) {
+                Button(L10n.t("history.missing.remove"), role: .destructive) {
+                    if let entry = missingEntry {
+                        app.history.remove(path: entry.path)
+                        reloadHistory()
+                    }
+                    missingEntry = nil
+                }
+                Button(L10n.t("common.cancel"), role: .cancel) {
+                    missingEntry = nil
+                }
+            } message: {
+                Text(missingEntry?.fileName ?? "")
             }
-        } message: {
-            Text(missingEntry?.fileName ?? "")
+            .task {
+                launchUpdate = await UpdateController.shared.checkAtLaunch()
+            }
+            .alert(
+                L10n.t("update.alert.title"),
+                isPresented: Binding(
+                    get: { launchUpdate != nil },
+                    set: { if !$0 { launchUpdate = nil } }
+                )
+            ) {
+                Button(L10n.t("update.alert.view")) {
+                    app.settingsTab = "about"
+                    app.presentSettingsIfIdle()
+                    launchUpdate = nil
+                }
+                Button(L10n.t("update.alert.close"), role: .cancel) {
+                    launchUpdate = nil
+                }
+            } message: {
+                Text("\(L10n.t("update.available")) \(launchUpdate?.version ?? "")")
+            }
+    }
+
+    /// 内容区:首页 / 查看器二选一。查看器只要有文档就保持挂载(仅隐藏),
+    /// PDFView 等 NSView 不销毁,滚动位置与缩放跨切换保留。
+    private var content: some View {
+        ZStack {
+            if session.hasDocuments {
+                ViewerView(session: session)
+                    .opacity(session.isViewerVisible ? 1 : 0)
+                    .allowsHitTesting(session.isViewerVisible)
+                    .accessibilityHidden(!session.isViewerVisible)
+            }
+            if !session.isViewerVisible {
+                moduleArea
+            }
         }
-        .task {
-            launchUpdate = await UpdateController.shared.checkAtLaunch()
-        }
-        .alert(
-            L10n.t("update.alert.title"),
-            isPresented: Binding(
-                get: { launchUpdate != nil },
-                set: { if !$0 { launchUpdate = nil } }
-            )
-        ) {
-            Button(L10n.t("update.alert.view")) {
-                app.settingsTab = "about"
-                app.presentSettingsIfIdle()
-                launchUpdate = nil
+    }
+
+    // MARK: - 唯一 toolbar(logo + 文档标签 + "+" + 查看器工具项)
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItemGroup(placement: .navigation) {
+            logoButton
+            if let primary = session.primary {
+                documentTab(
+                    title: primary.title,
+                    isActive: session.isTabActive(.primary),
+                    onFocus: { session.focusTab(.primary) },
+                    onCloseTab: { session.closeTab(.primary) }
+                )
             }
-            Button(L10n.t("update.alert.close"), role: .cancel) {
-                launchUpdate = nil
+            if let secondary = session.secondary {
+                documentTab(
+                    title: secondary.title,
+                    isActive: session.isTabActive(.secondary),
+                    onFocus: { session.focusTab(.secondary) },
+                    onCloseTab: { session.closeTab(.secondary) }
+                )
             }
-        } message: {
-            Text("\(L10n.t("update.available")) \(launchUpdate?.version ?? "")")
+            // 已开满 2 个文档时隐藏 "+"。
+            if HomeToolbarPolicy.showsAddDocument(isSessionFull: session.isFull) {
+                if session.hasDocuments {
+                    // 参考图:标签区与 "+" 之间的细竖分隔线。
+                    Rectangle()
+                        .fill(Color(nsColor: .separatorColor))
+                        .frame(
+                            width: ViewerTabMetrics.separatorWidth,
+                            height: ViewerTabMetrics.separatorHeight
+                        )
+                }
+                Button {
+                    addDocument()
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.callout.weight(.medium))
+                }
+                .buttonStyle(HoverButtonStyle(variant: .toolbar))
+                .accessibilityLabel(L10n.t("viewer.addTab"))
+                .help(L10n.t("viewer.addTab"))
+            }
         }
+        ToolbarItemGroup {
+            if session.isViewerVisible, session.secondary != nil, session.effectiveLayout == .sideBySide {
+                ratioControl(L10n.t("viewer.leftRatio"), value: $session.ratioA)
+                ratioControl(L10n.t("viewer.rightRatio"), value: $session.ratioB)
+                resetRatioButton
+            }
+        }
+        // 对照浏览:窗口最右,仅查看器前置时出现。
+        ToolbarItemGroup(placement: .primaryAction) {
+            if session.isViewerVisible {
+                sideBySideButton
+            }
+        }
+    }
+
+    private var logoButton: some View {
+        Button {
+            if HomeToolbarPolicy.logoAction(isViewerVisible: session.isViewerVisible) == .returnHome {
+                session.returnHome()
+            }
+        } label: {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 20, height: 20)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(L10n.t("app.name"))
+        .help(L10n.t("app.name"))
+    }
+
+    private var sideBySideButton: some View {
+        Button {
+            session.layout = .sideBySide
+        } label: {
+            Label(L10n.t("viewer.sideBySide"), systemImage: "rectangle.split.2x1")
+        }
+        .buttonStyle(HoverButtonStyle(variant: .toolbar))
+        .disabled(!session.comparisonEnabled || session.effectiveLayout == .sideBySide)
+        .accessibilityLabel(L10n.t("viewer.sideBySide"))
+        .help(session.comparisonEnabled ? L10n.t("viewer.sideBySide") : L10n.t("viewer.sideBySide.disabled"))
+    }
+
+    // macOS 工具栏常不渲染 Stepper 的 label,数值必须用独立 Text 显式呈现。
+    private func ratioControl(_ title: String, value: Binding<Double>) -> some View {
+        HStack(spacing: 4) {
+            Text("\(title) \(Int((value.wrappedValue * 100).rounded()))%")
+                .monospacedDigit()
+                .frame(minWidth: 72, alignment: .trailing)
+            Stepper(title, value: value, in: 0.5...2.0, step: 0.1)
+                .labelsHidden()
+                .help(L10n.t("viewer.ratio.help"))
+        }
+    }
+
+    private var resetRatioButton: some View {
+        Button {
+            session.resetRatios()
+        } label: {
+            Label(L10n.t("viewer.resetRatio"), systemImage: "arrow.counterclockwise")
+        }
+        .buttonStyle(HoverButtonStyle(variant: .toolbar))
+        .disabled(session.isDefaultRatio)
+        .help(L10n.t("viewer.resetRatio"))
+    }
+
+    private func documentTab(
+        title: String,
+        isActive: Bool,
+        onFocus: @escaping () -> Void,
+        onCloseTab: @escaping () -> Void
+    ) -> some View {
+        HStack(spacing: 8) {
+            // 标签主体可点 → 聚焦该侧(首页点击 = 回查看器)。
+            Button(action: onFocus) {
+                Text(title)
+                    .font(.callout)
+                    .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: ViewerTabMetrics.maxTitleWidth, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(title)
+            // × 关闭按钮独立,点击不穿透到聚焦;首页也可关。
+            Button(action: onCloseTab) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .buttonStyle(TabCloseButtonStyle())
+            .help(L10n.t("viewer.closeTab"))
+        }
+        .padding(.horizontal, ViewerTabMetrics.horizontalPadding)
+        // 参考图(Chrome/PDF Expert 式):标签占满标题栏可用高度,仅激活标签有底色。
+        .frame(height: ViewerTabMetrics.height)
+        .background(activeTabFill(isActive: isActive), in: RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(Color.primary.opacity(isActive ? 0.12 : 0), lineWidth: 1)
+        )
+    }
+
+    /// 激活标签底色:亮色模式用内容底(textBackgroundColor,浅于标题栏),
+    /// 暗色模式 textBackgroundColor 近黑、反而更暗,改用系统 quaternary fill 亮一档;
+    /// 非激活标签无底色。全部走系统语义色,不写死色值。
+    private func activeTabFill(isActive: Bool) -> AnyShapeStyle {
+        guard isActive else { return AnyShapeStyle(Color.clear) }
+        return colorScheme == .dark
+            ? AnyShapeStyle(.quaternary)
+            : AnyShapeStyle(Color(nsColor: .textBackgroundColor))
+    }
+
+    private var passwordAlertPresented: Binding<Bool> {
+        Binding(
+            get: { session.passwordRequest != nil },
+            set: { isPresented in
+                if !isPresented {
+                    session.cancelPasswordRequest()
+                    passwordInput = ""
+                }
+            }
+        )
     }
 
     // MARK: - 模块与最近打开
@@ -215,18 +395,12 @@ struct MainView: View {
                     .frame(width: HomeLayout.moduleIconSize, height: HomeLayout.moduleIconSize)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Text(title)
-                            .font(.callout.weight(.semibold))
-                        if !isEnabled {
-                            Text(L10n.t("main.convert.disabled"))
-                                .font(.caption2.weight(.medium))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                    }
+                    // 原型三张卡片同构(icon + 标题 + 副文案),禁用态不加可见角标,
+                    // 仅靠 disabled + .help 提示"功能规划中"。
+                    Text(title)
+                        .font(.title3.weight(.semibold))
                     Text(subtitle)
-                        .font(.caption)
+                        .font(.callout)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -296,6 +470,8 @@ struct MainView: View {
                 .frame(width: HomeLayout.historySizeColumnWidth, alignment: .leading)
         }
         .font(.callout)
+        // 行内容与 hover 高亮框之间留出内边距,不顶到边缘。
+        .padding(.horizontal, HomeLayout.historyRowHorizontalPadding)
         .frame(height: HomeLayout.historyRowHeight)
         .contentShape(Rectangle())
         .hoverHighlight()
@@ -310,9 +486,14 @@ struct MainView: View {
 
     // MARK: - 行为
 
-    private func popViewer() {
-        if !path.isEmpty {
-            path.removeLast()
+    /// "+":无文档时走文件选择器开主文档;已有主文档时按对照流程选 PDF 加副文档。
+    private func addDocument() {
+        if session.hasDocuments {
+            guard let picked = ViewerSecondaryDocumentPicker.pick() else { return }
+            session.open(url: picked)
+        } else {
+            pendingModule = .viewer
+            showFileImporter = true
         }
     }
 
@@ -371,7 +552,8 @@ struct MainView: View {
             // 需求 3.1:历史只记录查看模块打开的主文件,翻译模块导入不入历史。
             translateDialog = TranslateDialogRequest(url: url)
         default:
-            path.append(.viewer(url))
+            // 会话有空位则作为新标签加进会话并聚焦;开满 2 个由会话弹提示。
+            session.open(url: url)
         }
         pendingModule = nil
     }
@@ -382,7 +564,35 @@ struct MainView: View {
             missingEntry = entry
             return
         }
-        path.append(.viewer(url))
+        session.open(url: url)
+    }
+}
+
+/// 标签页 × 关闭按钮:小圆形命中区,hover 显示浅底 + pointingHand。
+private struct TabCloseButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        TabCloseButtonBody(configuration: configuration)
+    }
+
+    private struct TabCloseButtonBody: View {
+        let configuration: ButtonStyle.Configuration
+        @State private var isHovering = false
+
+        var body: some View {
+            configuration.label
+                .foregroundStyle(isHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                .frame(width: 16, height: 16)
+                .background(
+                    Circle().fill(Color.primary.opacity(isHovering ? 0.12 : 0.0))
+                )
+                .opacity(configuration.isPressed ? 0.7 : 1)
+                .animation(.easeOut(duration: 0.1), value: isHovering)
+                .onHover { hovering in
+                    isHovering = hovering
+                }
+                .onDisappear { isHovering = false }
+                .clickableHoverCursor()
+        }
     }
 }
 

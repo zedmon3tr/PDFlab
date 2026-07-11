@@ -1,12 +1,15 @@
 import AppKit
 import PDFKit
-import SwiftUI
 
+/// 缩放按钮的刻度数学。范围单一事实源是 `PDFPreviewConfiguration`(0.25–8,
+/// 与触控板捏合共用),这里只补充 10% 刻度对齐与显示格式化。
 enum ViewerZoom {
-    static let minimumScale = 0.05
-    static let maximumScale = 8.0
-    static let step = 0.1
-    static let presets: [Double] = [8, 4, 2, 1.5, 1.25, 1, 0.75, 0.5, 0.25, 0.1, 0.05]
+    static let minimumScale = Double(PDFPreviewConfiguration.minimumScale)
+    static let maximumScale = Double(PDFPreviewConfiguration.maximumScale)
+    /// 加减按钮步进:10%。
+    static let stepPercent = 10
+    /// 浮点脏值容差(以"格"为单位):0.199999… 视同 20% 刻度。
+    private static let tickTolerance = 0.001
 
     static func clampedScale(_ scale: Double) -> Double {
         min(max(scale, minimumScale), maximumScale)
@@ -16,149 +19,78 @@ enum ViewerZoom {
         "\(Int((clampedScale(scale) * 100).rounded()))%"
     }
 
-    static func fittedScale(
-        available: Double,
-        page: Double,
-        pagesAcross: Int,
-        interPageSpacing: Double = 0
-    ) -> Double {
-        let usable = available - max(interPageSpacing, 0) * Double(max(pagesAcross - 1, 0))
-        guard usable > 0, page > 0, pagesAcross > 0 else { return 1 }
-        return clampedScale(usable / (page * Double(pagesAcross)))
+    /// 放大:非刻度值先对齐到上方最近刻度(19% → 20%),刻度值再进一格(20% → 30%)。
+    static func steppedUp(from scale: Double) -> Double {
+        let tick = Int(floor(scale * 100 / Double(stepPercent) + tickTolerance))
+        return clampedScale(Double((tick + 1) * stepPercent) / 100)
+    }
+
+    /// 缩小:非刻度值先对齐到下方最近刻度(31% → 30%),刻度值再退一格(30% → 20%),
+    /// 结果不低于支持下限。
+    static func steppedDown(from scale: Double) -> Double {
+        let tick = Int(ceil(scale * 100 / Double(stepPercent) - tickTolerance))
+        return clampedScale(Double((tick - 1) * stepPercent) / 100)
     }
 }
 
-enum ViewerZoomAction: Equatable {
-    case scale(Double)
-    case fitPage
-    case fitWidth
-    case fitHeight
-}
-
-struct ViewerZoomRequest: Equatable {
-    var action: ViewerZoomAction
+/// 一次缩放命令:按钮点击产生,SinglePDFView 按 revision 幂等施加
+/// (SwiftUI 重渲染重复走 updateNSView 时不重复设置 scaleFactor)。
+struct ViewerZoomCommand: Equatable {
+    var scale: Double
     var revision: Int
-
-    static let initial = ViewerZoomRequest(action: .scale(1), revision: 0)
-
 }
 
-/// PDFView is the source of truth for observed zoom. UI commands travel in the
-/// opposite direction through `request`, so trackpad gestures never echo back as commands.
-struct ViewerZoomState: Equatable {
-    var scale = 1.0
-    var request = ViewerZoomRequest.initial
+/// PDFView `scaleFactor` 回显观察者:KVO + `PDFViewScaleChanged` 通知双保险,
+/// 捏合/按钮/自动适配任何来源的缩放变化都汇入 `onScale`。
+/// 防回环三件套:程序化施加期间 `isSuspended` 挂起;相同值去重(lastReported);
+/// 回显只更新显示值、绝不派生新命令(由调用方约定,见 `ViewerSession.noteObservedZoomScale`)。
+final class PDFScaleEchoObserver {
+    var onScale: ((Double) -> Void)?
+    /// 程序化施加缩放期间置 true,阻断自己触发的 KVO/通知回显。
+    var isSuspended = false
 
-    mutating func observe(_ observedScale: Double) {
-        scale = ViewerZoom.clampedScale(observedScale)
-    }
+    private var observation: NSKeyValueObservation?
+    private var notificationObserver: NSObjectProtocol?
+    private var lastReported: Double?
 
-    mutating func command(_ action: ViewerZoomAction) {
-        if case .scale(let requestedScale) = action {
-            scale = ViewerZoom.clampedScale(requestedScale)
+    func attach(to pdfView: PDFView) {
+        detach()
+        observation = pdfView.observe(\.scaleFactor, options: [.new]) { [weak self] view, _ in
+            self?.report(Double(view.scaleFactor))
         }
-        request = ViewerZoomRequest(action: action, revision: request.revision + 1)
-    }
-}
-
-final class PDFZoomController {
-    private var lastRequestRevision: Int?
-    private weak var observedView: PDFView?
-    private var scaleObserver: NSObjectProtocol?
-    private var isApplying = false
-
-    func apply(
-        _ request: ViewerZoomRequest,
-        to pdfView: PDFView,
-        scale: Binding<Double>,
-        force: Bool = false
-    ) {
-        observe(pdfView, scale: scale)
-        guard force || lastRequestRevision != request.revision else { return }
-        lastRequestRevision = request.revision
-
-        isApplying = true
-        defer { isApplying = false }
-
-        pdfView.minScaleFactor = CGFloat(ViewerZoom.minimumScale)
-        pdfView.maxScaleFactor = CGFloat(ViewerZoom.maximumScale)
-
-        switch request.action {
-        case .scale(let requestedScale):
-            setScale(requestedScale, on: pdfView)
-        case .fitPage:
-            setScale(Double(pdfView.scaleFactorForSizeToFit), on: pdfView)
-        case .fitWidth:
-            setScale(fittedScale(for: pdfView, dimension: .width), on: pdfView)
-        case .fitHeight:
-            setScale(fittedScale(for: pdfView, dimension: .height), on: pdfView)
-        }
-
-        scale.wrappedValue = Double(pdfView.scaleFactor)
-    }
-
-    private func observe(_ pdfView: PDFView, scale: Binding<Double>) {
-        guard observedView !== pdfView else { return }
-        stopObserving()
-        observedView = pdfView
-        scaleObserver = NotificationCenter.default.addObserver(
+        notificationObserver = NotificationCenter.default.addObserver(
             forName: .PDFViewScaleChanged,
             object: pdfView,
-            queue: .main
-        ) { [weak self, weak pdfView] _ in
-            guard let self, !self.isApplying, let pdfView else { return }
-            scale.wrappedValue = Double(pdfView.scaleFactor)
+            queue: nil
+        ) { [weak self] notification in
+            guard let view = notification.object as? PDFView else { return }
+            self?.report(Double(view.scaleFactor))
         }
     }
 
-    private func stopObserving() {
-        if let scaleObserver {
-            NotificationCenter.default.removeObserver(scaleObserver)
+    /// 挂起解除后由调用方补报当前真实值(如按钮施加后的实际 clamp 结果)。
+    func reportCurrentScale(of pdfView: PDFView) {
+        report(Double(pdfView.scaleFactor))
+    }
+
+    func detach() {
+        observation?.invalidate()
+        observation = nil
+        if let notificationObserver {
+            NotificationCenter.default.removeObserver(notificationObserver)
         }
-        scaleObserver = nil
-        observedView = nil
+        notificationObserver = nil
+        lastReported = nil
     }
 
-    deinit { stopObserving() }
-
-    private func setScale(_ requestedScale: Double, on pdfView: PDFView) {
-        pdfView.autoScales = false
-        pdfView.scaleFactor = CGFloat(ViewerZoom.clampedScale(requestedScale))
+    deinit {
+        detach()
     }
 
-    private enum Dimension {
-        case width
-        case height
-    }
-
-    private func fittedScale(for pdfView: PDFView, dimension: Dimension) -> Double {
-        guard let page = pdfView.currentPage ?? pdfView.document?.page(at: 0) else {
-            return 1
-        }
-        let pageBounds = page.bounds(for: pdfView.displayBox)
-        let visibleBounds = visibleBounds(in: pdfView)
-        let available = dimension == .width ? visibleBounds.width : visibleBounds.height
-        let pageDimension = dimension == .width ? pageBounds.width : pageBounds.height
-        let pagesAcross = dimension == .width && pdfView.displayMode == .twoUpContinuous ? 2 : 1
-        let interPageSpacing: CGFloat = dimension == .width && pdfView.displaysPageBreaks ? 16 : 0
-        return ViewerZoom.fittedScale(
-            available: Double(available),
-            page: Double(pageDimension),
-            pagesAcross: pagesAcross,
-            interPageSpacing: Double(interPageSpacing)
-        )
-    }
-
-    private func visibleBounds(in pdfView: PDFView) -> NSRect {
-        guard let scrollView = findScrollView(in: pdfView) else { return .zero }
-        return scrollView.contentView.bounds
-    }
-
-    private func findScrollView(in view: NSView) -> NSScrollView? {
-        if let scrollView = view as? NSScrollView { return scrollView }
-        for subview in view.subviews {
-            if let scrollView = findScrollView(in: subview) { return scrollView }
-        }
-        return nil
+    private func report(_ scale: Double) {
+        guard !isSuspended else { return }
+        if let lastReported, abs(lastReported - scale) < 0.0001 { return }
+        lastReported = scale
+        onScale?(scale)
     }
 }

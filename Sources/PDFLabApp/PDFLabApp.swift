@@ -5,6 +5,11 @@ import PDFLabCore
 struct PDFLabApp: App {
     @StateObject private var appState = AppState()
 
+    init() {
+        // 开发运行时把通用可执行图标换成真实 logo(标题栏按钮读 NSApp.applicationIconImage)。
+        AppIconResource.install()
+    }
+
     var body: some Scene {
         WindowGroup {
             MainView()

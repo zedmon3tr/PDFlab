@@ -1,6 +1,7 @@
 import AppKit
 import PDFKit
 
+/// 单 PDF 预览模式:双页并排 / 连续滚动(默认)。
 enum ViewerReadingLayout: String, CaseIterable, Identifiable {
     case twoPage
     case continuous

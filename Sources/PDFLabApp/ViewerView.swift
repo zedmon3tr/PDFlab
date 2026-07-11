@@ -4,6 +4,9 @@ import SwiftUI
 import UniformTypeIdentifiers
 import PDFLabCore
 
+/// 查看器内容视图:单文档 / 对照面板 + 单 PDF 控制条。
+/// 状态全部在常驻 ViewerSession 里(浏览器 tab 语义,回首页不销毁);
+/// 标签条、比例/对照工具项与 alert 由 MainView 的唯一 toolbar 承载。
 struct ViewerView: View {
     static var openableContentTypes: [UTType] {
         var types: [UTType] = [.pdf, .plainText]
@@ -13,132 +16,37 @@ struct ViewerView: View {
         return types
     }
 
-    let url: URL
-    let secondaryURL: URL?
-    let onDocumentOpened: (URL) -> Void
-    let onClose: () -> Void
-
-    @EnvironmentObject private var app: AppState
-
-    @State private var didLoad = false
-    @State private var primary: ViewerDocument?
-    @State private var secondary: ViewerDocument?
-    @State private var layout: ViewerLayout = .single(.primary)
-    @State private var readingLayout = ViewerReadingLayout.defaultLayout
-    @State private var zoomState = ViewerZoomState()
-    @State private var ratioA = 1.0
-    @State private var ratioB = 1.0
-    @State private var alert: ViewerAlert?
-    @State private var passwordRequest: PasswordRequest?
-    @State private var passwordInput = ""
-    @State private var passwordFailure: String?
-
-    init(
-        url: URL,
-        secondaryURL: URL? = nil,
-        onDocumentOpened: @escaping (URL) -> Void = { _ in },
-        onClose: @escaping () -> Void = {}
-    ) {
-        self.url = url
-        self.secondaryURL = secondaryURL
-        self.onDocumentOpened = onDocumentOpened
-        self.onClose = onClose
-    }
+    @ObservedObject var session: ViewerSession
 
     var body: some View {
         VStack(spacing: 0) {
-            documentTabBar
-            Divider()
-            if showsSinglePDFControls {
-                singlePDFControls
+            if showsControlBar {
+                controlBar
                 Divider()
             }
             viewerContent
-        }
-            .navigationTitle(primary?.title ?? url.lastPathComponent)
-            .toolbar {
-                ToolbarItemGroup {
-                    if secondary != nil, effectiveLayout == .sideBySide {
-                        ratioControl(L10n.t("viewer.leftRatio"), value: $ratioA)
-                        ratioControl(L10n.t("viewer.rightRatio"), value: $ratioB)
-                        resetRatioButton
-                    }
-                }
-            }
-            .onAppear(perform: loadInitialDocuments)
-            .alert(item: $alert) { item in
-                Alert(
-                    title: Text(item.title),
-                    message: Text(item.message),
-                    dismissButton: .default(Text(L10n.t("common.confirm")))
-                )
-            }
-            .alert(
-                L10n.t("viewer.password.title"),
-                isPresented: Binding(
-                    get: { passwordRequest != nil },
-                    set: { isPresented in
-                        if !isPresented {
-                            passwordRequest = nil
-                            passwordInput = ""
-                            passwordFailure = nil
-                        }
-                    }
-                )
-            ) {
-                SecureField(L10n.t("viewer.password.prompt"), text: $passwordInput)
-                Button(L10n.t("viewer.password.open")) {
-                    guard let request = passwordRequest else { return }
-                    let password = passwordInput
-                    passwordRequest = nil
-                    passwordInput = ""
-                    load(request.url, side: request.side, password: password)
-                }
-                Button(L10n.t("common.cancel"), role: .cancel) {
-                    passwordRequest = nil
-                    passwordInput = ""
-                    passwordFailure = nil
-                }
-            } message: {
-                if let passwordFailure {
-                    Text(passwordFailure)
-                } else {
-                    Text(passwordRequest?.url.lastPathComponent ?? "")
-                }
-            }
-    }
-
-    /// 有效布局:处理边界(secondary 缺失时任何指向 secondary 的布局都退回单看 primary)。
-    private var effectiveLayout: ViewerLayout {
-        switch layout {
-        case .sideBySide where !comparisonEnabled:
-            return .single(.primary)
-        case .single(.secondary) where secondary == nil:
-            return .single(.primary)
-        default:
-            return layout
         }
     }
 
     @ViewBuilder
     private var viewerContent: some View {
-        if let primary {
-            switch effectiveLayout {
+        if let primary = session.primary {
+            switch session.effectiveLayout {
             case .sideBySide:
-                if let secondary {
+                if let secondary = session.secondary {
                     DualPaneView(
                         left: primary,
                         right: secondary,
-                        ratioA: ratioA,
-                        ratioB: ratioB,
-                        readingLayout: readingLayout
+                        ratioA: session.ratioA,
+                        ratioB: session.ratioB,
+                        readingLayout: session.readingLayout
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     singleDocumentContent(primary)
                 }
             case .single(.secondary):
-                if let secondary {
+                if let secondary = session.secondary {
                     singleDocumentContent(secondary)
                 } else {
                     singleDocumentContent(primary)
@@ -157,184 +65,92 @@ struct ViewerView: View {
     private func singleDocumentContent(_ document: ViewerDocument) -> some View {
         SingleDocumentView(
             document: document,
-            readingLayout: readingLayout,
-            zoomScale: pdfZoomScale,
-            zoomRequest: zoomState.request
+            readingLayout: session.readingLayout,
+            zoomCommand: session.zoomCommand,
+            onScaleChange: { [weak session] scale in
+                session?.noteObservedZoomScale(scale)
+            }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    // MARK: - Chrome 式文档标签条
+    // MARK: - 单 PDF 控制条(Figma "viewing pdf" 帧:缩放组 + 预览模式切换,水平居中)
 
-    @ViewBuilder
-    private var documentTabBar: some View {
-        HStack(spacing: 6) {
-            if let primary {
-                documentTab(
-                    title: primary.title,
-                    isActive: isTabActive(.primary),
-                    onFocus: { focus(.primary) },
-                    onCloseTab: { closePrimary() }
-                )
-            }
-            if let secondary {
-                documentTab(
-                    title: secondary.title,
-                    isActive: isTabActive(.secondary),
-                    onFocus: { focus(.secondary) },
-                    onCloseTab: { closeSecondary() }
-                )
-            }
-            // 已开 2 个文档时隐藏 "+"(最多 2 个)。
-            if primary == nil || secondary == nil {
-                Button {
-                    openSecondaryDocument()
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.callout.weight(.medium))
-                }
-                .buttonStyle(HoverButtonStyle(variant: .toolbar))
-                .accessibilityLabel(L10n.t("viewer.addTab"))
-                .help(L10n.t("viewer.addTab"))
-            }
-            Spacer()
-            Button {
-                layout = .sideBySide
-            } label: {
-                Label(L10n.t("viewer.sideBySide"), systemImage: "rectangle.split.2x1")
-            }
-            .buttonStyle(HoverButtonStyle(variant: .toolbar))
-            .disabled(!comparisonEnabled || effectiveLayout == .sideBySide)
-            .accessibilityLabel(L10n.t("viewer.sideBySide"))
-            .help(comparisonEnabled ? L10n.t("viewer.sideBySide") : L10n.t("viewer.sideBySide.disabled"))
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(.quaternary.opacity(0.35))
+    private var isSideBySide: Bool {
+        session.effectiveLayout == .sideBySide
     }
 
-    /// 标签是否处于激活态:sideBySide 下两侧都算激活;single 下仅被聚焦的一侧激活。
-    private func isTabActive(_ side: ViewerSide) -> Bool {
-        switch effectiveLayout {
-        case .sideBySide:
-            return true
-        case .single(let focused):
-            return focused == side
-        }
-    }
-
-    private func focus(_ side: ViewerSide) {
-        layout = .single(side)
-    }
-
-    private func documentTab(
-        title: String,
-        isActive: Bool,
-        onFocus: @escaping () -> Void,
-        onCloseTab: @escaping () -> Void
-    ) -> some View {
-        HStack(spacing: 6) {
-            // 标签主体可点 → 聚焦该侧。
-            Button(action: onFocus) {
-                Text(title)
-                    .font(.callout)
-                    .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: 220, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(title)
-            // × 关闭按钮独立,点击不穿透到聚焦。
-            Button(action: onCloseTab) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
-            }
-            .buttonStyle(TabCloseButtonStyle())
-            .help(L10n.t("viewer.closeTab"))
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(
-            (isActive ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.18) : Color(nsColor: .windowBackgroundColor)),
-            in: RoundedRectangle(cornerRadius: 8)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.primary.opacity(isActive ? 0.16 : 0.08), lineWidth: 1)
-        )
-    }
-
-    // 关闭 secondary:回到 primary 单文档。
-    private func closeSecondary() {
-        secondary = nil
-        layout = .single(.primary)
-        resetRatios()
-    }
-
-    // 关闭 primary:secondary 晋升为唯一文档(晋升不写历史);无 secondary 则返回主界面。
-    private func closePrimary() {
-        if let promoted = secondary {
-            primary = promoted
-            secondary = nil
-            layout = .single(.primary)
-            resetRatios()
-        } else {
-            onClose()
-        }
-    }
-
-    private func resetRatios() {
-        ratioA = 1.0
-        ratioB = 1.0
-    }
-
-    private var currentSingleDocument: ViewerDocument? {
-        switch effectiveLayout {
-        case .single(.primary):
-            return primary
-        case .single(.secondary):
-            return secondary
-        case .sideBySide:
-            return nil
-        }
-    }
-
-    private var comparisonEnabled: Bool {
-        ViewerComparisonPolicy.isEnabled(
-            primaryKind: primary?.kind,
-            secondaryKind: secondary?.kind
-        )
-    }
-
-    private var pdfZoomScale: Binding<Double> {
-        Binding(
-            get: { zoomState.scale },
-            set: { zoomState.observe($0) }
-        )
-    }
-
-    private var showsSinglePDFControls: Bool {
+    private var showsControlBar: Bool {
         ViewerToolbarPolicy.showsZoomControl(
-            currentDocumentKind: currentSingleDocument?.kind,
-            isSideBySide: effectiveLayout == .sideBySide
+            currentDocumentKind: session.currentSingleDocument?.kind,
+            isSideBySide: isSideBySide
+        ) || ViewerToolbarPolicy.showsReadingLayoutControl(
+            currentDocumentKind: session.currentSingleDocument?.kind,
+            isSideBySide: isSideBySide
         )
     }
 
-    private var singlePDFControls: some View {
-        HStack(spacing: 12) {
-            zoomControl
-            Spacer()
-            readingLayoutControl
+    private var controlBar: some View {
+        HStack(spacing: ViewerControlBarMetrics.groupSpacing) {
+            if ViewerToolbarPolicy.showsZoomControl(
+                currentDocumentKind: session.currentSingleDocument?.kind,
+                isSideBySide: isSideBySide
+            ) {
+                zoomControl
+            }
+            if ViewerToolbarPolicy.showsReadingLayoutControl(
+                currentDocumentKind: session.currentSingleDocument?.kind,
+                isSideBySide: isSideBySide
+            ) {
+                readingLayoutControl
+            }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(.quaternary.opacity(0.18))
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 4)
     }
 
+    /// [-] [100%] [+]:按钮 32×32、百分比静态文本框 56×32、间距 2。
+    private var zoomControl: some View {
+        HStack(spacing: ViewerControlBarMetrics.itemSpacing) {
+            controlBarIconButton("minus", labelKey: "viewer.zoomOut") {
+                session.zoomOut()
+            }
+            Text(ViewerZoom.percentLabel(for: session.zoomScale))
+                .font(.callout)
+                .monospacedDigit()
+                .frame(
+                    width: ViewerControlBarMetrics.percentWidth,
+                    height: ViewerControlBarMetrics.buttonSize
+                )
+                .background(
+                    .quaternary.opacity(0.5),
+                    in: RoundedRectangle(cornerRadius: ViewerControlBarMetrics.cornerRadius)
+                )
+                .accessibilityLabel(L10n.t("viewer.zoom"))
+                .help(L10n.t("viewer.zoom"))
+            controlBarIconButton("plus", labelKey: "viewer.zoomIn") {
+                session.zoomIn()
+            }
+        }
+    }
+
+    private func controlBarIconButton(
+        _ systemName: String,
+        labelKey: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12, weight: .medium))
+        }
+        .buttonStyle(ControlBarIconButtonStyle())
+        .accessibilityLabel(L10n.t(labelKey))
+        .help(L10n.t(labelKey))
+    }
+
+    /// 双页 / 滚动预览模式分段切换。
     private var readingLayoutControl: some View {
-        Picker(L10n.t("viewer.pageLayout"), selection: $readingLayout) {
+        Picker(L10n.t("viewer.pageLayout"), selection: $session.readingLayout) {
             ForEach(ViewerReadingLayout.allCases) { layout in
                 Label(L10n.t(layout.titleKey), systemImage: layout.iconName)
                     .tag(layout)
@@ -343,217 +159,89 @@ struct ViewerView: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .fixedSize()
+        .accessibilityLabel(L10n.t("viewer.pageLayout"))
         .help(L10n.t("viewer.pageLayout"))
     }
-
-    private var zoomControl: some View {
-        HStack(spacing: 4) {
-            Button { changeZoom(by: -ViewerZoom.step) } label: {
-                Image(systemName: "minus")
-            }
-            .buttonStyle(HoverButtonStyle(variant: .toolbar))
-            .accessibilityLabel(L10n.t("viewer.zoomOut"))
-            .help(L10n.t("viewer.zoomOut"))
-
-            Menu {
-                ForEach(ViewerZoom.presets, id: \.self) { preset in
-                    Button(ViewerZoom.percentLabel(for: preset)) {
-                        setZoom(.scale(preset))
-                    }
-                }
-                Divider()
-                Button(L10n.t("viewer.zoomActualSize")) { setZoom(.scale(1)) }
-                Button(L10n.t("viewer.zoomFitPage")) { setZoom(.fitPage) }
-                Button(L10n.t("viewer.zoomFitWidth")) { setZoom(.fitWidth) }
-                Button(L10n.t("viewer.zoomFitHeight")) { setZoom(.fitHeight) }
-            } label: {
-                Text(ViewerZoom.percentLabel(for: zoomState.scale))
-                    .monospacedDigit()
-                    .frame(minWidth: 52)
-            }
-            .menuStyle(.borderlessButton)
-            .help(L10n.t("viewer.zoom"))
-
-            Button { changeZoom(by: ViewerZoom.step) } label: {
-                Image(systemName: "plus")
-            }
-            .buttonStyle(HoverButtonStyle(variant: .toolbar))
-            .accessibilityLabel(L10n.t("viewer.zoomIn"))
-            .help(L10n.t("viewer.zoomIn"))
-        }
-    }
-
-    private func changeZoom(by delta: Double) {
-        setZoom(.scale(ViewerZoom.clampedScale(zoomState.scale + delta)))
-    }
-
-    private func setZoom(_ action: ViewerZoomAction) {
-        zoomState.command(action)
-    }
-
-    // macOS 工具栏常不渲染 Stepper 的 label,数值必须用独立 Text 显式呈现。
-    private func ratioControl(_ title: String, value: Binding<Double>) -> some View {
-        HStack(spacing: 4) {
-            Text("\(title) \(Int((value.wrappedValue * 100).rounded()))%")
-                .monospacedDigit()
-                .frame(minWidth: 72, alignment: .trailing)
-            Stepper(title, value: value, in: 0.5...2.0, step: 0.1)
-                .labelsHidden()
-                .help(L10n.t("viewer.ratio.help"))
-        }
-    }
-
-    private var isDefaultRatio: Bool {
-        abs(ratioA - 1.0) < 0.001 && abs(ratioB - 1.0) < 0.001
-    }
-
-    private var resetRatioButton: some View {
-        Button {
-            resetRatios()
-        } label: {
-            Label(L10n.t("viewer.resetRatio"), systemImage: "arrow.counterclockwise")
-        }
-        .buttonStyle(HoverButtonStyle(variant: .toolbar))
-        .disabled(isDefaultRatio)
-        .help(L10n.t("viewer.resetRatio"))
-    }
-
-    private func loadInitialDocuments() {
-        guard !didLoad else { return }
-        didLoad = true
-        load(url, side: .primary)
-        if let secondaryURL {
-            load(secondaryURL, side: .secondary)
-            // A pre-supplied pair (for example translation output) explicitly requests comparison.
-            if secondary != nil {
-                layout = .sideBySide
-            }
-        }
-    }
-
-    private func openSecondaryDocument() {
-        guard let picked = ViewerSecondaryDocumentPicker.pick() else { return }
-        load(picked, side: .secondary)
-    }
-
-    private func load(_ url: URL, side: ViewerSide, password: String? = nil) {
-        let kind = Self.kind(for: url)
-
-        switch kind {
-        case .unsupported:
-            if side == .primary {
-                assign(ViewerDocument(url: url, kind: .unsupported, password: nil), side: side)
-            }
-            alert = ViewerAlert(title: L10n.t("viewer.unsupported"), message: url.lastPathComponent)
-        case .text:
-            guard Self.canReadText(url) else {
-                if side == .primary {
-                    assign(ViewerDocument(url: url, kind: .unsupported, password: nil), side: side)
-                }
-                alert = ViewerAlert(title: L10n.t("viewer.openFailed"), message: url.lastPathComponent)
-                return
-            }
-            assign(ViewerDocument(url: url, kind: .text, password: nil), side: side)
-            recordOpen(url, side: side)
-        case .pdf:
-            do {
-                _ = try PDFTextExtractor.openDocument(at: url, password: password)
-                assign(ViewerDocument(url: url, kind: .pdf, password: password), side: side)
-                passwordFailure = nil
-                recordOpen(url, side: side)
-            } catch PDFLabError.encryptedPDFWrongPassword {
-                passwordFailure = password == nil ? nil : L10n.message(for: .encryptedPDFWrongPassword)
-                passwordRequest = PasswordRequest(url: url, side: side)
-            } catch let error as PDFLabError {
-                if side == .primary {
-                    assign(ViewerDocument(url: url, kind: .unsupported, password: nil), side: side)
-                }
-                alert = ViewerAlert(title: L10n.t("viewer.openFailed"), message: L10n.message(for: error))
-            } catch {
-                if side == .primary {
-                    assign(ViewerDocument(url: url, kind: .unsupported, password: nil), side: side)
-                }
-                alert = ViewerAlert(title: L10n.t("viewer.openFailed"), message: error.localizedDescription)
-            }
-        }
-    }
-
-    private func recordOpen(_ url: URL, side: ViewerSide) {
-        // 需求 3.1:历史只记录主文件(左侧首个文档),加载的译文对照文件不入历史。
-        guard side == .primary else { return }
-        app.history.record(url: url)
-        onDocumentOpened(url)
-    }
-
-    private func assign(_ document: ViewerDocument, side: ViewerSide) {
-        switch side {
-        case .primary:
-            primary = document
-        case .secondary:
-            // 每次进入/更换对照文档时把滚动比例恢复默认,不带上次残留值。
-            resetRatios()
-            secondary = document
-            layout = .single(.secondary)
-        }
-    }
-
-    private static func kind(for url: URL) -> ViewerDocumentKind {
-        switch url.pathExtension.lowercased() {
-        case "pdf":
-            return .pdf
-        case "md", "markdown", "txt", "text":
-            return .text
-        default:
-            return .unsupported
-        }
-    }
-
-    private static func canReadText(_ url: URL) -> Bool {
-        ViewerTextLoader.load(from: url) != nil
-    }
 }
 
-/// 标签页 × 关闭按钮:小圆形命中区,hover 显示浅底 + pointingHand。
-private struct TabCloseButtonStyle: ButtonStyle {
+/// 控制条度量(Figma "viewing pdf" 帧)。
+enum ViewerControlBarMetrics {
+    /// 加/减按钮边长(命中区,≥ DESIGN.md 图标按钮 24×24 下限)。
+    static let buttonSize: CGFloat = 32
+    /// 百分比静态文本框宽度。
+    static let percentWidth: CGFloat = 56
+    /// 缩放组内元素间距。
+    static let itemSpacing: CGFloat = 2
+    /// 缩放组与预览模式切换组件的间距。
+    static let groupSpacing: CGFloat = 27
+    /// 控件圆角(DESIGN.md 紧凑控件 6pt)。
+    static let cornerRadius: CGFloat = 6
+}
+
+/// 控制条 32×32 图标按钮:整块命中区 + 轻 hover 反馈,遵循 Reduce Motion / 增强对比度。
+private struct ControlBarIconButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        TabCloseButtonBody(configuration: configuration)
-    }
-
-    private struct TabCloseButtonBody: View {
-        let configuration: ButtonStyle.Configuration
-        @State private var isHovering = false
-
-        var body: some View {
-            configuration.label
-                .foregroundStyle(isHovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                .frame(width: 16, height: 16)
-                .background(
-                    Circle().fill(Color.primary.opacity(isHovering ? 0.12 : 0.0))
-                )
-                .opacity(configuration.isPressed ? 0.7 : 1)
-                .animation(.easeOut(duration: 0.1), value: isHovering)
-                .onHover { hovering in
-                    isHovering = hovering
-                }
-                .onDisappear { isHovering = false }
-                .clickableHoverCursor()
-        }
+        ControlBarIconButtonBody(configuration: configuration)
     }
 }
 
-private enum ViewerSide: Equatable {
-    case primary
-    case secondary
+private struct ControlBarIconButtonBody: View {
+    let configuration: ButtonStyle.Configuration
+
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @State private var isHovering = false
+
+    var body: some View {
+        configuration.label
+            .foregroundStyle(isEnabled ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+            .frame(
+                width: ViewerControlBarMetrics.buttonSize,
+                height: ViewerControlBarMetrics.buttonSize
+            )
+            .background(
+                Color.primary.opacity(isHovering ? 0.08 : 0.035),
+                in: RoundedRectangle(cornerRadius: ViewerControlBarMetrics.cornerRadius)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: ViewerControlBarMetrics.cornerRadius)
+                    .strokeBorder(
+                        Color.primary.opacity(
+                            HoverContrast.strokeOpacity(
+                                base: isHovering ? 0.16 : 0.08,
+                                increasedContrast: colorSchemeContrast == .increased
+                            )
+                        ),
+                        lineWidth: 1
+                    )
+            )
+            .contentShape(RoundedRectangle(cornerRadius: ViewerControlBarMetrics.cornerRadius))
+            .scaleEffect(HoverMotion.pressedScale(isPressed: configuration.isPressed, reduceMotion: reduceMotion))
+            .opacity(isEnabled ? (configuration.isPressed ? 0.82 : 1) : 0.46)
+            .animation(.easeOut(duration: HoverMotion.animationDuration(base: 0.12, reduceMotion: reduceMotion)), value: isHovering)
+            .animation(.easeOut(duration: HoverMotion.animationDuration(base: 0.08, reduceMotion: reduceMotion)), value: configuration.isPressed)
+            .onHover { hovering in
+                isHovering = isEnabled && hovering
+            }
+            .clickableHoverCursor(enabled: isEnabled)
+    }
 }
 
-/// 查看器视图模式:single 聚焦单看某一侧,sideBySide 左右并排对照。
-private enum ViewerLayout: Equatable {
-    case single(ViewerSide)
-    case sideBySide
+/// 标题栏文档标签度量(参考图:Chrome/PDF Expert 式标签)。
+enum ViewerTabMetrics {
+    /// 标签高度:尽量占满 macOS 标题栏工具项可用高度。
+    static let height: CGFloat = 28
+    static let horizontalPadding: CGFloat = 12
+    static let maxTitleWidth: CGFloat = 220
+    /// 标签区与 "+" 之间的细竖分隔线。
+    static let separatorWidth: CGFloat = 1
+    static let separatorHeight: CGFloat = 18
 }
 
+/// 单 PDF 控制条显隐策略:仅当前单看文档为 PDF 时显示;
+/// 对照阅读两栏各自连续滚动并由同步控制器协调,单文档布局/缩放控件不参与。
 enum ViewerToolbarPolicy {
-    /// 对照阅读两栏各自连续滚动并由同步控制器协调,本次单文档布局/缩放控件不参与。
     static func showsReadingLayoutControl(currentDocumentKind: ViewerDocumentKind?, isSideBySide: Bool) -> Bool {
         currentDocumentKind == .pdf && !isSideBySide
     }
@@ -570,15 +258,4 @@ enum ViewerComparisonPolicy {
     ) -> Bool {
         primaryKind == .pdf && secondaryKind == .pdf
     }
-}
-
-private struct PasswordRequest {
-    var url: URL
-    var side: ViewerSide
-}
-
-private struct ViewerAlert: Identifiable {
-    let id = UUID()
-    var title: String
-    var message: String
 }
