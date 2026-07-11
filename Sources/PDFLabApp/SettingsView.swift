@@ -2,7 +2,8 @@ import AppKit
 import SwiftUI
 import PDFLabCore
 
-/// 设置面板(`Settings` scene):外观 / 界面语言 / 翻译引擎 / 数据管理。
+/// 设置面板(主窗口 sheet,固定 760×560;`Settings` 独立窗口场景已弃用,
+/// 见 product-spec-changelog.md 2026-07-10):外观 / 界面语言 / 翻译引擎 / 数据管理。
 struct SettingsView: View {
     private enum TestState: Equatable {
         case idle
@@ -21,25 +22,46 @@ struct SettingsView: View {
     @State private var pendingCloudEngineID: String?
 
     var body: some View {
-        TabView(selection: $app.settingsTab) {
-            generalTab
-                .tabItem {
-                    Label(L10n.t("settings.tab.general"), systemImage: "gearshape")
+        VStack(spacing: 0) {
+            Picker("", selection: $app.settingsTab) {
+                Text(L10n.t("settings.tab.general")).tag("general")
+                Text(L10n.t("settings.tab.services")).tag("services")
+                Text(L10n.t("settings.tab.about")).tag("about")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+            .padding(.top, 16)
+            .padding(.bottom, 12)
+
+            Divider()
+
+            Group {
+                switch app.settingsTab {
+                case "services":
+                    servicesTab
+                case "about":
+                    aboutTab
+                default:
+                    generalTab
                 }
-                .tag("general")
-            servicesTab
-                .tabItem {
-                    Label(L10n.t("settings.tab.services"), systemImage: "globe")
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            Divider()
+
+            HStack {
+                Spacer()
+                // Esc 经 cancelAction 关闭 sheet;隐私 alert 弹出期间按键由 alert 接管,不冲突。
+                Button(L10n.t("common.done")) {
+                    app.settingsPresented = false
                 }
-                .tag("services")
-            aboutTab
-                .tabItem {
-                    Label(L10n.t("settings.tab.about"), systemImage: "info.circle")
-                }
-                .tag("about")
+                .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
         }
-        .frame(width: 760)
-        .frame(minHeight: 520)
+        .frame(width: 760, height: 560)
         .onAppear(perform: loadSecrets)
         .alert(
             L10n.t("privacy.cloudNotice.title"),

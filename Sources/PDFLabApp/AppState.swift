@@ -75,8 +75,32 @@ final class AppState: ObservableObject {
     /// (设置面板是独立窗口,清空后主窗口不会重新触发 .onAppear)。
     @Published private(set) var historyRevision = 0
 
-    /// 设置窗口当前 Tab("general"/"services"/"about");启动更新 alert 经它把设置定位到关于页。
+    /// 设置面板当前 Tab("general"/"services"/"about");启动更新 alert 经它把设置定位到关于页。
     @Published var settingsTab: String = "general"
+
+    /// 设置 sheet 呈现状态(挂在主窗口,替代已弃用的 `Settings` 独立窗口场景):
+    /// 齿轮按钮与 ⌘, 菜单命令共用。
+    @Published var settingsPresented = false
+
+    /// 翻译任务面板是否正占用主窗口 sheet 位(由 MainView 同步)。
+    /// 占用期间忽略打开设置的请求,避免同层两个 sheet 争抢导致
+    /// `settingsPresented` 卡在 true(之后齿轮按钮点了没反应)。
+    @Published var translateSheetActive = false
+
+    /// 打开设置 sheet 的守卫判定(纯函数,便于测试):
+    /// 只有主窗口没有其他 sheet 且设置未打开时才呈现。
+    nonisolated static func shouldPresentSettings(translateSheetActive: Bool, settingsPresented: Bool) -> Bool {
+        !translateSheetActive && !settingsPresented
+    }
+
+    /// 齿轮按钮 / ⌘, 命令的统一入口:守卫通过才置 `settingsPresented`。
+    func presentSettingsIfIdle() {
+        guard Self.shouldPresentSettings(
+            translateSheetActive: translateSheetActive,
+            settingsPresented: settingsPresented
+        ) else { return }
+        settingsPresented = true
+    }
 
     /// 清空历史并广播变更,让任何缓存历史列表的视图刷新。
     func clearHistory() {

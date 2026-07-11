@@ -18,7 +18,6 @@ struct MainView: View {
     }
 
     @EnvironmentObject private var app: AppState
-    @Environment(\.openSettings) private var openSettings
 
     @State private var path: [Destination] = []
     @State private var historyState = MainHistoryState()
@@ -39,7 +38,7 @@ struct MainView: View {
             .toolbar {
                 ToolbarItem(placement: .navigation) {
                     Button {
-                        openSettings()
+                        app.presentSettingsIfIdle()
                     } label: {
                         Image(systemName: "gearshape")
                     }
@@ -63,10 +62,13 @@ struct MainView: View {
                 }
             }
         }
-        .background(MainWindowResizeControl(isResizeEnabled: translateDialog == nil))
+        .background(MainWindowResizeControl(isResizeEnabled: translateDialog == nil && !app.settingsPresented))
         .onAppear { reloadHistory() }
-        // 设置面板(独立窗口)清空历史后广播 historyRevision,主界面据此重载缓存列表。
+        // 设置 sheet 清空历史后广播 historyRevision,主界面据此重载缓存列表。
         .onChange(of: app.historyRevision) { reloadHistory() }
+        // 翻译面板占用主窗口 sheet 位时,⌘, 打开设置的请求被 AppState 守卫忽略,
+        // 避免同层两个 sheet 争抢(settingsPresented 卡 true 后齿轮失效)。
+        .onChange(of: translateDialog?.id) { app.translateSheetActive = translateDialog != nil }
         .fileImporter(
             isPresented: $showFileImporter,
             allowedContentTypes: pendingModule == .translate ? [.pdf] : ViewerView.openableContentTypes,
@@ -90,6 +92,11 @@ struct MainView: View {
             )
             .environmentObject(app)
             .frame(width: TranslateOptionsLayout.dialogWidth, height: TranslateOptionsLayout.dialogHeight)
+        }
+        // 设置面板:固定尺寸主窗口 sheet(替代已弃用的 Settings 独立窗口场景)。
+        .sheet(isPresented: $app.settingsPresented) {
+            SettingsView()
+                .environmentObject(app)
         }
         .alert(
             L10n.t("history.missing"),
@@ -123,7 +130,7 @@ struct MainView: View {
         ) {
             Button(L10n.t("update.alert.view")) {
                 app.settingsTab = "about"
-                openSettings()
+                app.presentSettingsIfIdle()
                 launchUpdate = nil
             }
             Button(L10n.t("update.alert.close"), role: .cancel) {

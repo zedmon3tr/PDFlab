@@ -16,10 +16,16 @@ struct PDFLabApp: App {
                 .onAppear { appState.applyAppearance() }
         }
         .defaultSize(width: 960, height: 680)
-
-        Settings {
-            SettingsView()
-                .environmentObject(appState)
+        // 设置不再使用 `Settings` 独立窗口场景(关窗会腐蚀主窗口工具栏按钮状态,
+        // 见 product-spec-changelog.md 2026-07-10),改为主窗口 sheet;
+        // ⌘, 菜单命令在此接管,与齿轮按钮共用同一呈现状态。
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button(L10n.t("settings.menu")) {
+                    appState.presentSettingsIfIdle()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
         }
     }
 

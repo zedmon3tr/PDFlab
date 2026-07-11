@@ -142,9 +142,11 @@ enum L10n {
         // 通用
         "common.cancel": ("取消", "Cancel"),
         "common.confirm": ("确认", "Confirm"),
+        "common.done": ("完成", "Done"),
 
         // 设置 - 分区
         "settings.title": ("设置", "Settings"),
+        "settings.menu": ("设置…", "Settings…"),
         "settings.open.help": ("打开设置", "Open Settings"),
         "settings.tab.general": ("设置", "Settings"),
         "settings.tab.services": ("服务", "Services"),
