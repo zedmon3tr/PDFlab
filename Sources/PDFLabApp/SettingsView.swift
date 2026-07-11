@@ -40,7 +40,6 @@ struct SettingsView: View {
         }
         .frame(width: 760)
         .frame(minHeight: 520)
-        .background(CenteredUtilityWindow())
         .onAppear(perform: loadSecrets)
         .alert(
             L10n.t("privacy.cloudNotice.title"),

@@ -337,7 +337,6 @@ private struct MainWindowResizeControl: NSViewRepresentable {
         @MainActor
         func update(window newWindow: NSWindow?, isResizeEnabled: Bool) {
             guard let newWindow else { return }
-            AppWindowRegistry.shared.registerMainWindow(newWindow)
             if window !== newWindow {
                 restore()
                 window = newWindow
