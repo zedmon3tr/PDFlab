@@ -1,3 +1,5 @@
+import Foundation
+
 struct TranslationEngineDescriptor: Identifiable, Equatable {
     enum Configuration: Equatable {
         case none
@@ -9,6 +11,7 @@ struct TranslationEngineDescriptor: Identifiable, Equatable {
     var configuration: Configuration
     var isCloud: Bool
     var isUnofficial: Bool
+    var minimumMacOSMajor: Int = 14
 
     static let defaultID = "youdao"
 
@@ -18,7 +21,8 @@ struct TranslationEngineDescriptor: Identifiable, Equatable {
             systemImage: "apple.logo",
             configuration: .none,
             isCloud: false,
-            isUnofficial: false
+            isUnofficial: false,
+            minimumMacOSMajor: 15
         ),
         .init(
             id: "llm",
@@ -52,6 +56,14 @@ struct TranslationEngineDescriptor: Identifiable, Equatable {
 
     static func descriptor(for id: String) -> TranslationEngineDescriptor? {
         all.first { $0.id == id }
+    }
+
+    static func available(macOSMajorVersion: Int) -> [TranslationEngineDescriptor] {
+        all.filter { macOSMajorVersion >= $0.minimumMacOSMajor }
+    }
+
+    static var availableOnCurrentOS: [TranslationEngineDescriptor] {
+        available(macOSMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion)
     }
 
     func enabledBadge(isCurrent: Bool) -> String? {

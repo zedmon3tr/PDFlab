@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 import PDFLabCore
@@ -8,7 +9,6 @@ struct MainView: View {
     enum Destination: Hashable {
         case viewer(URL)
         case viewerPair(URL, URL)
-        case translate(URL)
     }
 
     /// 卡片点击后待执行的模块(决定选完文件去哪个目的地)。
@@ -24,6 +24,7 @@ struct MainView: View {
     @State private var historyState = MainHistoryState()
     @State private var pendingModule: PendingModule?
     @State private var showFileImporter = false
+    @State private var translateDialog: TranslateDialogRequest?
     @State private var missingEntry: HistoryEntry?
     @State private var launchUpdate: UpdateInfo?
 
@@ -59,15 +60,10 @@ struct MainView: View {
                     } onClose: {
                         popViewer()
                     }
-                case .translate(let url):
-                    TranslateFlowView(url: url) { sourceURL, outputURL in
-                        app.history.record(url: sourceURL)
-                        reloadHistory()
-                        path.append(.viewerPair(sourceURL, outputURL))
-                    }
                 }
             }
         }
+        .background(MainWindowResizeControl(isResizeEnabled: translateDialog == nil))
         .onAppear { reloadHistory() }
         // 设置面板(独立窗口)清空历史后广播 historyRevision,主界面据此重载缓存列表。
         .onChange(of: app.historyRevision) { reloadHistory() }
@@ -78,6 +74,22 @@ struct MainView: View {
         ) { result in
             guard case .success(let urls) = result, let url = urls.first else { return }
             open(url: url)
+        }
+        .sheet(item: $translateDialog) { request in
+            TranslateFlowView(
+                url: request.url,
+                openInViewer: { sourceURL, outputURL in
+                    translateDialog = nil
+                    app.history.record(url: sourceURL)
+                    reloadHistory()
+                    path.append(.viewerPair(sourceURL, outputURL))
+                },
+                close: {
+                    translateDialog = nil
+                }
+            )
+            .environmentObject(app)
+            .frame(width: TranslateOptionsLayout.dialogWidth, height: TranslateOptionsLayout.dialogHeight)
         }
         .alert(
             L10n.t("history.missing"),
@@ -268,7 +280,7 @@ struct MainView: View {
         switch pendingModule {
         case .translate:
             // 需求 3.1:历史只记录查看模块打开的主文件,翻译模块导入不入历史。
-            path.append(.translate(url))
+            translateDialog = TranslateDialogRequest(url: url)
         default:
             path.append(.viewer(url))
         }
@@ -282,5 +294,106 @@ struct MainView: View {
             return
         }
         path.append(.viewer(url))
+    }
+}
+
+private struct TranslateDialogRequest: Identifiable {
+    let id = UUID()
+    var url: URL
+}
+
+private struct MainWindowResizeControl: NSViewRepresentable {
+    var isResizeEnabled: Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            context.coordinator.update(window: view.window, isResizeEnabled: isResizeEnabled)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            context.coordinator.update(window: nsView.window, isResizeEnabled: isResizeEnabled)
+        }
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        Task { @MainActor in
+            coordinator.restore()
+        }
+    }
+
+    final class Coordinator {
+        private weak var window: NSWindow?
+        private var resizeDelegate = MainWindowResizeDelegate()
+        private weak var originalDelegate: NSWindowDelegate?
+
+        @MainActor
+        func update(window newWindow: NSWindow?, isResizeEnabled: Bool) {
+            guard let newWindow else { return }
+            AppWindowRegistry.shared.registerMainWindow(newWindow)
+            if window !== newWindow {
+                restore()
+                window = newWindow
+                originalDelegate = newWindow.delegate
+                resizeDelegate.forwardDelegate = originalDelegate
+                newWindow.delegate = resizeDelegate
+            }
+
+            resizeDelegate.blocksEdgeResize = !isResizeEnabled
+        }
+
+        @MainActor
+        func restore() {
+            if let window, window.delegate === resizeDelegate {
+                window.delegate = originalDelegate
+            }
+            resizeDelegate.blocksEdgeResize = false
+            resizeDelegate.forwardDelegate = nil
+            self.window = nil
+            self.originalDelegate = nil
+        }
+    }
+}
+
+private final class MainWindowResizeDelegate: NSObject, NSWindowDelegate {
+    weak var forwardDelegate: NSWindowDelegate?
+    var blocksEdgeResize = false
+    private var lockedLiveResizeSize: NSSize?
+
+    override func responds(to aSelector: Selector!) -> Bool {
+        super.responds(to: aSelector) || (forwardDelegate?.responds(to: aSelector) ?? false)
+    }
+
+    override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        guard forwardDelegate?.responds(to: aSelector) == true else {
+            return super.forwardingTarget(for: aSelector)
+        }
+        return forwardDelegate
+    }
+
+    func windowWillStartLiveResize(_ notification: Notification) {
+        if blocksEdgeResize, let window = notification.object as? NSWindow {
+            lockedLiveResizeSize = window.frame.size
+        }
+        forwardDelegate?.windowWillStartLiveResize?(notification)
+    }
+
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        if blocksEdgeResize, sender.inLiveResize || lockedLiveResizeSize != nil {
+            return lockedLiveResizeSize ?? sender.frame.size
+        }
+        return forwardDelegate?.windowWillResize?(sender, to: frameSize) ?? frameSize
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        forwardDelegate?.windowDidEndLiveResize?(notification)
+        lockedLiveResizeSize = nil
     }
 }

@@ -11,10 +11,21 @@ public struct SourceParagraph: Equatable, Sendable {
     public var text: String
     public var pageIndex: Int
     public var ocrConfidence: Double?   // nil = 来自文本层非 OCR
-    public init(text: String, pageIndex: Int, ocrConfidence: Double? = nil) {
+    public var listMarker: String?
+    public init(text: String, pageIndex: Int, ocrConfidence: Double? = nil, listMarker: String? = nil) {
         self.text = text
         self.pageIndex = pageIndex
         self.ocrConfidence = ocrConfidence
+        self.listMarker = listMarker
+    }
+
+    public var displayText: String {
+        textWithListMarker(text)
+    }
+
+    public func textWithListMarker(_ body: String) -> String {
+        guard let listMarker, !listMarker.isEmpty else { return body }
+        return "\(listMarker) \(body)"
     }
 }
 
@@ -32,6 +43,29 @@ public struct ParsedDocument: Equatable, Sendable {
 
 public enum TranslationDirection: String, Sendable, CaseIterable {
     case enToZh, zhToEn
+}
+
+public enum OCRLanguage: String, Sendable, CaseIterable {
+    case automatic
+    case english
+    case simplifiedChinese
+    case traditionalChinese
+    case japanese
+    case korean
+}
+
+public enum TranslationTargetLanguage: String, Sendable, CaseIterable {
+    case simplifiedChinese
+    case english
+
+    public var legacyDirection: TranslationDirection {
+        switch self {
+        case .simplifiedChinese:
+            return .enToZh
+        case .english:
+            return .zhToEn
+        }
+    }
 }
 
 public enum OutputContent: String, Sendable, CaseIterable { case translationOnly, bilingual, extractionOnly }

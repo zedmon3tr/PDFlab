@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "PDFlab",
     defaultLocalization: "zh-Hans",
-    platforms: [.macOS(.v15)],
+    platforms: [.macOS(.v14)],
     targets: [
         .target(name: "PDFLabCore",
                 swiftSettings: [.swiftLanguageMode(.v5)]),

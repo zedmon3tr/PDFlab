@@ -12,23 +12,35 @@ struct TranslateFlowState: Equatable {
     var phase: Phase = .idle
     var sourceURL: URL?
     var password: String?
-    var options = ExportOptions(content: .bilingual, format: .markdown, pageMode: .pageAligned)
+    var options = ExportOptions(content: .translationOnly, format: .pdf, pageMode: .pageAligned)
+    var ocrLanguage: OCRLanguage = .automatic
+    var ocrLanguageIsAutoDetected = false
+    private var ocrLanguageWasChangedByUser = false
+    var targetLanguage: TranslationTargetLanguage = .simplifiedChinese
     var forcedDirection: TranslationDirection?
     var progress: PipelineProgress?
     var runStartedAt: Date?
     var composed: ComposedDocument?
     var parsed: ParsedDocument?
     var outputURL: URL?
+    var previewPageIndex = 0
+    var previewPageCount = 1
 
-    mutating func acceptFile(_ url: URL, password: String? = nil) {
+    mutating func acceptFile(_ url: URL, password: String? = nil, pageCount: Int = 1) {
         sourceURL = url
         self.password = password
+        ocrLanguage = .automatic
+        ocrLanguageIsAutoDetected = false
+        ocrLanguageWasChangedByUser = false
+        targetLanguage = .simplifiedChinese
         forcedDirection = nil
         progress = nil
         runStartedAt = nil
         composed = nil
         parsed = nil
         outputURL = nil
+        previewPageIndex = 0
+        previewPageCount = max(1, pageCount)
         phase = .optionsReady
     }
 
@@ -59,12 +71,83 @@ struct TranslateFlowState: Equatable {
         self = TranslateFlowState()
     }
 
+    var previewPageDisplayText: String {
+        "\(previewPageIndex + 1)/\(previewPageCount)"
+    }
+
+    var canMoveToPreviousPreviewPage: Bool {
+        previewPageIndex > 0
+    }
+
+    var canMoveToNextPreviewPage: Bool {
+        previewPageIndex < previewPageCount - 1
+    }
+
+    mutating func movePreviewPage(by delta: Int) {
+        let upperBound = max(0, previewPageCount - 1)
+        previewPageIndex = min(max(previewPageIndex + delta, 0), upperBound)
+    }
+
+    mutating func applyDetectedOCRLanguage(_ language: OCRLanguage?) {
+        guard !ocrLanguageWasChangedByUser else { return }
+        guard let language, language != .automatic else {
+            ocrLanguage = .automatic
+            ocrLanguageIsAutoDetected = false
+            return
+        }
+        ocrLanguage = language
+        ocrLanguageIsAutoDetected = true
+    }
+
+    mutating func setOCRLanguage(_ language: OCRLanguage) {
+        ocrLanguage = language
+        ocrLanguageIsAutoDetected = false
+        ocrLanguageWasChangedByUser = true
+    }
+
+    func ocrLanguageLabel(for language: OCRLanguage) -> String {
+        let base = Self.ocrLanguageName(for: language)
+        if language == ocrLanguage, ocrLanguageIsAutoDetected {
+            return String(format: L10n.t("translate.ocrLanguage.autoFormat"), base)
+        }
+        return base
+    }
+
+    static func ocrLanguageName(for language: OCRLanguage) -> String {
+        switch language {
+        case .automatic: return L10n.t("translate.ocrLanguage.automatic")
+        case .english: return L10n.t("translate.ocrLanguage.english")
+        case .simplifiedChinese: return L10n.t("translate.ocrLanguage.simplifiedChinese")
+        case .traditionalChinese: return L10n.t("translate.ocrLanguage.traditionalChinese")
+        case .japanese: return L10n.t("translate.ocrLanguage.japanese")
+        case .korean: return L10n.t("translate.ocrLanguage.korean")
+        }
+    }
+
+    static func targetLanguageName(for language: TranslationTargetLanguage) -> String {
+        switch language {
+        case .simplifiedChinese: return L10n.t("translate.targetLanguage.simplifiedChinese")
+        case .english: return L10n.t("translate.targetLanguage.english")
+        }
+    }
+
     static func fileExtension(for format: OutputFormat) -> String {
         switch format {
         case .markdown: return "md"
         case .pdf: return "pdf"
         case .docx: return "docx"
         }
+    }
+
+    static func defaultOutputURL(sourceURL: URL, format: OutputFormat) -> URL {
+        sourceURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(defaultOutputName(sourceURL: sourceURL, format: format))
+    }
+
+    static func defaultOutputName(sourceURL: URL, format: OutputFormat) -> String {
+        let base = sourceURL.deletingPathExtension().lastPathComponent
+        return "\(base)-translated.\(fileExtension(for: format))"
     }
 }
 
@@ -123,7 +206,7 @@ enum TranslateProgressFormatter {
 
     static func remainingText(for seconds: Int) -> String {
         if seconds < 60 {
-            return L10n.t("translate.remaining.lessThanMinute")
+            return String(format: L10n.t("translate.remaining.seconds"), max(0, seconds))
         }
         let minutes = max(1, Int(ceil(Double(seconds) / 60)))
         if minutes < 60 {

@@ -13,10 +13,11 @@ import PDFLabCore
 /// 因此这里对同一翻译方向 **只建一次 session**:首批设定 config 拿到 session 后,
 /// 后续同方向批次全部经 `AsyncStream` 喂给这个常驻 session,不再改动 config;
 /// 仅当翻译方向切换(语言对不同 → config 必然不相等)时才重建 session。
+@available(macOS 15.0, *)
 @MainActor
 public final class AppleTranslationHost: ObservableObject, AppleSessionRunner, @unchecked Sendable {
     /// 单例。nonisolated:类型为 @unchecked Sendable 且属性不可变,
-    /// 供 AppState 的 nonisolated 引擎工厂(ViewerTranslationService engineProvider)跨隔离域引用。
+    /// 供 AppState 的 nonisolated 引擎工厂跨隔离域引用。
     nonisolated public static let shared = AppleTranslationHost()
 
     @Published public private(set) var pendingConfig: TranslationSession.Configuration?
@@ -32,6 +33,14 @@ public final class AppleTranslationHost: ObservableObject, AppleSessionRunner, @
     private var streamContinuation: AsyncStream<QueuedRequest>.Continuation?
     private var stream: AsyncStream<QueuedRequest>?
     private var currentDirection: TranslationDirection?
+
+    /// 流按方向切换分代(generation)。每代记录已喂入流、尚未被 `serve` 兑现的请求 id,
+    /// 供该代 stream continuation 的 `onTermination` 在流终结时(显式 `finish()`,或
+    /// SwiftUI 因 config 变化取消旧 `.translationTask` 导致的隐式终结)兜底失败掉滞留请求——
+    /// 否则这些请求的 continuation 永远不会被兑现,复现 2026-07-04 修过的"多批次永久挂起"问题:
+    /// 旧修复保证了"同方向"不再挂起,但没处理"方向切换时旧流里还没被 serve 消费到的在飞请求"。
+    private var currentGeneration = 0
+    private var pendingIDsByGeneration: [Int: Set<UUID>] = [:]
 
     // nonisolated:仅赋默认值,供上面 nonisolated 单例初始化表达式调用。
     nonisolated private init() {}
@@ -67,11 +76,21 @@ public final class AppleTranslationHost: ObservableObject, AppleSessionRunner, @
         let request = QueuedRequest(id: id, texts: texts)
 
         if pendingConfig == nil || currentDirection != direction {
-            // 新方向(或首次):重建 stream 并触发 `.translationTask` 建立新 session。
+            // 新方向(或首次):finish 旧流——无论是这里主动 finish,还是 SwiftUI 因
+            // config 变化取消旧 `.translationTask` 导致的隐式终结,旧代的 onTermination
+            // 都会兜底失败掉滞留在旧流里、还没被 serve 消费到的请求,不会遗漏。
             streamContinuation?.finish()
             currentDirection = direction
-            let newStream = AsyncStream<QueuedRequest> { continuation in
-                self.streamContinuation = continuation
+            let generation = currentGeneration + 1
+            currentGeneration = generation
+            pendingIDsByGeneration[generation] = [id]
+            let newStream = AsyncStream<QueuedRequest> { streamCont in
+                streamCont.onTermination = { [weak self] _ in
+                    Task { @MainActor in
+                        self?.failStranded(generation: generation)
+                    }
+                }
+                self.streamContinuation = streamCont
             }
             stream = newStream
             streamContinuation?.yield(request)
@@ -81,7 +100,19 @@ public final class AppleTranslationHost: ObservableObject, AppleSessionRunner, @
             )
         } else {
             // 同方向:复用常驻 session,直接喂流(不动 config,避免 `.translationTask` 不重跑的坑)。
+            pendingIDsByGeneration[currentGeneration, default: []].insert(id)
             streamContinuation?.yield(request)
+        }
+    }
+
+    /// 某代 stream 终结(finish 或取消)时的兜底:把该代里还喂入了流、但还没被 `serve`
+    /// 消费/兑现的请求全部按"引擎不可用"失败,而不是让 continuation 永久悬挂。
+    /// `resolve` 本身幂等(`continuations` 里已被正常兑现的 id 会被 `removeValue` 命中为
+    /// nil 而直接跳过),所以这里对已经成功完成的请求是安全的空操作。
+    private func failStranded(generation: Int) {
+        guard let ids = pendingIDsByGeneration.removeValue(forKey: generation) else { return }
+        for id in ids {
+            resolve(id: id, throwing: PDFLabError.engineUnavailable(engineID: "apple"))
         }
     }
 

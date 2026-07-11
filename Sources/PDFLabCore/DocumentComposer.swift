@@ -27,12 +27,12 @@ public enum DocumentComposer {
 
             switch effectiveContent {
             case .translationOnly:
-                blocks.append(.translatedText(translations[index]))
+                blocks.append(.translatedText(paragraph.textWithListMarker(translations[index])))
             case .bilingual:
-                blocks.append(.sourceText(paragraph.text))
-                blocks.append(.translatedText(translations[index]))
+                blocks.append(.sourceText(paragraph.displayText))
+                blocks.append(.translatedText(paragraph.textWithListMarker(translations[index])))
             case .extractionOnly:
-                blocks.append(.sourceText(paragraph.text))
+                blocks.append(.sourceText(paragraph.displayText))
             }
         }
 

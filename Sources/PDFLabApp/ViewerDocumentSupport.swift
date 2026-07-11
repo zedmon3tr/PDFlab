@@ -40,7 +40,7 @@ enum ViewerTextLoader {
 }
 
 /// 只读文本查看视图(NSScrollView + NSTextView)的统一构造:
-/// 对照面板与单文档文本视图共用,保证外观与选区行为(划选气泡)一致。
+/// 对照面板与单文档文本视图共用,保证外观与原生文字选择行为一致。
 enum ViewerTextViewFactory {
     @MainActor
     static func makeScrollable(text: String) -> (scrollView: NSScrollView, textView: NSTextView) {

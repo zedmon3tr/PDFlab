@@ -30,8 +30,8 @@ public struct DeepLXEngine: TranslationEngine {
     }
 
     private func translateChunk(_ text: String, direction: TranslationDirection) async throws -> String {
-        let (sourceLang, targetLang) = direction == .enToZh ? ("EN", "ZH") : ("ZH", "EN")
-        let body = Self.buildRequestBody(text: text, sourceLang: sourceLang, targetLang: targetLang)
+        let targetLang = direction == .enToZh ? "ZH" : "EN"
+        let body = Self.buildRequestBody(text: text, sourceLang: "auto", targetLang: targetLang)
 
         var request = URLRequest(url: URL(string: "https://www2.deepl.com/jsonrpc")!)
         request.httpMethod = "POST"

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import PDFLabCore
 
@@ -39,6 +40,7 @@ struct SettingsView: View {
         }
         .frame(width: 760)
         .frame(minHeight: 520)
+        .background(CenteredUtilityWindow())
         .onAppear(perform: loadSecrets)
         .alert(
             L10n.t("privacy.cloudNotice.title"),
@@ -92,9 +94,7 @@ struct SettingsView: View {
     /// 关于:App 名称、版本、一句话简介。
     private var aboutTab: some View {
         VStack(spacing: 12) {
-            Image(systemName: "doc.text.magnifyingglass")
-                .font(.system(size: 44, weight: .medium))
-                .foregroundStyle(.tint)
+            aboutLogo
             Text(L10n.t("app.name"))
                 .font(.title2.weight(.semibold))
             Text("\(L10n.t("about.version")) \(PDFLabCoreInfo.version)")
@@ -108,6 +108,23 @@ struct SettingsView: View {
             updateSection
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var aboutLogo: some View {
+        let icon = NSApp.applicationIconImage
+        if let icon, AboutLogoPresentation.usesApplicationIcon(icon) {
+            Image(nsImage: icon)
+                .resizable()
+                .scaledToFit()
+                .frame(width: AboutLogoPresentation.iconSide, height: AboutLogoPresentation.iconSide)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .accessibilityHidden(true)
+        } else {
+            Image(systemName: AboutLogoPresentation.fallbackSystemImage)
+                .font(.system(size: 44, weight: .medium))
+                .foregroundStyle(.tint)
+        }
     }
 
     // MARK: - 检查更新
@@ -237,7 +254,7 @@ struct SettingsView: View {
 
             ScrollView {
                 LazyVStack(spacing: 2) {
-                    ForEach(TranslationEngineDescriptor.all) { service in
+                    ForEach(TranslationEngineDescriptor.availableOnCurrentOS) { service in
                         serviceRow(service)
                     }
                 }
@@ -308,7 +325,9 @@ struct SettingsView: View {
     }
 
     private var serviceDetail: some View {
-        let service = TranslationEngineDescriptor.descriptor(for: app.engineID) ?? TranslationEngineDescriptor.all[0]
+        let service = TranslationEngineDescriptor.availableOnCurrentOS.first { $0.id == app.engineID }
+            ?? TranslationEngineDescriptor.descriptor(for: TranslationEngineDescriptor.defaultID)
+            ?? TranslationEngineDescriptor.all[0]
 
         return Group {
             switch service.configuration {
@@ -432,5 +451,15 @@ struct SettingsView: View {
         } else {
             try? KeychainStore.save(key: key, value: value)
         }
+    }
+}
+
+enum AboutLogoPresentation {
+    static let fallbackSystemImage = "doc.text.magnifyingglass"
+    static let iconSide: CGFloat = 72
+
+    static func usesApplicationIcon(_ image: NSImage?) -> Bool {
+        guard let image else { return false }
+        return image.size.width > 0 && image.size.height > 0
     }
 }

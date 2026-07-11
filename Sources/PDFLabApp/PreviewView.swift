@@ -76,37 +76,63 @@ struct PreviewRow: Equatable {
     static func rows(from document: ComposedDocument, content: OutputContent) -> [PreviewRow] {
         var rows: [PreviewRow] = []
         var pendingSource: String?
+        var pageSources: [String] = []
+        var pageTranslations: [String] = []
+
+        func appendPendingSource() {
+            if let source = pendingSource {
+                pageSources.append(source)
+                pendingSource = nil
+            }
+        }
+
+        func joined(_ parts: [String]) -> String? {
+            let text = parts
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n\n")
+            return text.isEmpty ? nil : text
+        }
+
+        func flushPageContent() {
+            appendPendingSource()
+            guard !pageSources.isEmpty || !pageTranslations.isEmpty else { return }
+            rows.append(
+                PreviewRow(
+                    source: joined(pageSources),
+                    translation: joined(pageTranslations)
+                )
+            )
+            pageSources.removeAll()
+            pageTranslations.removeAll()
+        }
 
         for block in document.blocks {
             switch block {
             case .pageBreak(let pageIndex):
-                if let source = pendingSource {
-                    rows.append(PreviewRow(source: source))
-                    pendingSource = nil
-                }
+                flushPageContent()
                 rows.append(PreviewRow(pageIndex: pageIndex))
             case .sourceText(let text):
                 if content == .bilingual {
                     if let source = pendingSource {
-                        rows.append(PreviewRow(source: source))
+                        pageSources.append(source)
                     }
                     pendingSource = text
                 } else {
-                    rows.append(PreviewRow(source: text))
+                    pageSources.append(text)
                 }
             case .translatedText(let text):
                 if content == .bilingual {
-                    rows.append(PreviewRow(source: pendingSource, translation: text))
+                    appendPendingSource()
+                    pageTranslations.append(text)
                     pendingSource = nil
                 } else {
-                    rows.append(PreviewRow(translation: text))
+                    pageTranslations.append(text)
                 }
             }
         }
 
-        if let source = pendingSource {
-            rows.append(PreviewRow(source: source))
-        }
+        flushPageContent()
 
         return rows
     }

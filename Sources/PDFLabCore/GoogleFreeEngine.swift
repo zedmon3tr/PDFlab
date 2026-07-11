@@ -22,9 +22,9 @@ public struct GoogleFreeEngine: TranslationEngine {
     }
 
     private func translateChunk(_ q: String, direction: TranslationDirection) async throws -> String {
-        let (sl, tl) = direction == .enToZh ? ("en", "zh-CN") : ("zh-CN", "en")
+        let tl = direction == .enToZh ? "zh-CN" : "en"
         var comps = URLComponents(string: "https://translate.googleapis.com/translate_a/single")!
-        comps.queryItems = [.init(name: "client", value: "gtx"), .init(name: "sl", value: sl),
+        comps.queryItems = [.init(name: "client", value: "gtx"), .init(name: "sl", value: "auto"),
                             .init(name: "tl", value: tl), .init(name: "dt", value: "t"), .init(name: "q", value: q)]
         let (data, resp): (Data, URLResponse)
         do { (data, resp) = try await client.data(for: URLRequest(url: comps.url!)) }

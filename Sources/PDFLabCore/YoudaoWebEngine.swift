@@ -90,12 +90,12 @@ public struct YoudaoWebEngine: TranslationEngine {
     // MARK: - 第 2 步:翻译
 
     private func translateChunk(_ text: String, direction: TranslationDirection, session: SessionKey) async throws -> String {
-        let (from, to) = direction == .enToZh ? ("en", "zh-CHS") : ("zh-CHS", "en")
+        let to = direction == .enToZh ? "zh-CHS" : "en"
         let mysticTime = String(Int(Date().timeIntervalSince1970 * 1000))
         let sign = Self.sign(mysticTime: mysticTime, secret: session.secretKey)
 
         var fields = Self.generalFields(keyid: "webfanyi", sign: sign, mysticTime: mysticTime)
-        fields.append(contentsOf: [("i", text), ("from", from), ("to", to), ("dictResult", "false")])
+        fields.append(contentsOf: [("i", text), ("from", "AUTO"), ("to", to), ("dictResult", "false")])
         let body = fields.map { "\(Self.formEncode($0.0))=\(Self.formEncode($0.1))" }.joined(separator: "&")
 
         var request = URLRequest(url: URL(string: Self.translateEndpoint)!)

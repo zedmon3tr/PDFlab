@@ -1,4 +1,5 @@
 import AppKit
+import PDFKit
 import SwiftUI
 import UniformTypeIdentifiers
 import PDFLabCore
@@ -6,6 +7,7 @@ import PDFLabCore
 struct TranslateFlowView: View {
     let initialURL: URL?
     let openInViewer: (URL, URL) -> Void
+    let close: () -> Void
 
     @EnvironmentObject private var app: AppState
 
@@ -19,31 +21,22 @@ struct TranslateFlowView: View {
     @State private var directionRequest: TranslateDirectionRequest?
     @State private var alert: TranslateAlert?
     @State private var runTask: Task<Void, Never>?
+    @State private var ocrDetectionTask: Task<Void, Never>?
     @State private var isSaving = false
 
     init(
         url: URL? = nil,
-        openInViewer: @escaping (URL, URL) -> Void = { _, _ in }
+        openInViewer: @escaping (URL, URL) -> Void = { _, _ in },
+        close: @escaping () -> Void = {}
     ) {
         initialURL = url
         self.openInViewer = openInViewer
+        self.close = close
     }
 
     var body: some View {
         content
             .navigationTitle(L10n.t("translate.title"))
-            .toolbar {
-                ToolbarItemGroup {
-                    Button {
-                        showFileImporter = true
-                    } label: {
-                        Label(L10n.t("translate.chooseFile"), systemImage: "doc.badge.plus")
-                    }
-                    .disabled(state.phase == .running)
-                    .buttonStyle(HoverButtonStyle(variant: .toolbar))
-                    .help(L10n.t("translate.chooseFile"))
-                }
-            }
             .onAppear(perform: handleInitialURL)
             .fileImporter(
                 isPresented: $showFileImporter,
@@ -103,7 +96,7 @@ struct TranslateFlowView: View {
             ) {
                 Button(L10n.t("common.confirm")) {
                     if let warning = softLimitWarning {
-                        acceptFile(warning.url, password: warning.password)
+                        acceptFile(warning.url, password: warning.password, pageCount: warning.check.pageCount)
                     }
                     softLimitWarning = nil
                 }
@@ -113,25 +106,16 @@ struct TranslateFlowView: View {
             } message: {
                 Text(softLimitWarning?.message ?? "")
             }
-            .alert(
-                L10n.t("translate.unsupportedLanguage.title"),
-                isPresented: Binding(
-                    get: { directionRequest != nil },
-                    set: { if !$0 { directionRequest = nil } }
+            .sheet(item: $directionRequest) { request in
+                UnsupportedLanguageDialog(
+                    request: request,
+                    chooseEnglish: { retryWithForcedDirection(.enToZh) },
+                    chooseChinese: { retryWithForcedDirection(.zhToEn) },
+                    cancel: {
+                        directionRequest = nil
+                        state.phase = .optionsReady
+                    }
                 )
-            ) {
-                Button(L10n.t("translate.direction.english")) {
-                    retryWithForcedDirection(.enToZh)
-                }
-                Button(L10n.t("translate.direction.chinese")) {
-                    retryWithForcedDirection(.zhToEn)
-                }
-                Button(L10n.t("common.cancel"), role: .cancel) {
-                    directionRequest = nil
-                    state.phase = .optionsReady
-                }
-            } message: {
-                Text(directionRequest?.message ?? L10n.t("translate.unsupportedLanguage.message"))
             }
     }
 
@@ -184,44 +168,205 @@ struct TranslateFlowView: View {
     }
 
     private var optionsView: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            fileHeader
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: TranslateOptionsLayout.columnGap) {
+                sourcePreviewPane
 
-            Form {
-                Picker(L10n.t("translate.content"), selection: $state.options.content) {
-                    Text(L10n.t("translate.content.bilingual")).tag(OutputContent.bilingual)
-                    Text(L10n.t("translate.content.translationOnly")).tag(OutputContent.translationOnly)
-                    Text(L10n.t("translate.content.extractionOnly")).tag(OutputContent.extractionOnly)
+                VStack(alignment: .leading, spacing: TranslateOptionsLayout.sectionGap) {
+                    fileHeader
+                    settingsPane
+
+                    Text(L10n.t("translate.ocrLanguage.help"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: TranslateOptionsLayout.settingsWidth, alignment: .leading)
+
+                    Spacer(minLength: 0)
+                    optionsActionBar
                 }
-                Picker(L10n.t("translate.format"), selection: $state.options.format) {
-                    Text("Markdown").tag(OutputFormat.markdown)
-                    Text("PDF").tag(OutputFormat.pdf)
-                    Text("DOCX").tag(OutputFormat.docx)
-                }
-                Picker(L10n.t("translate.pageMode"), selection: $state.options.pageMode) {
-                    Text(L10n.t("translate.pageMode.pageAligned")).tag(PageMode.pageAligned)
-                    Text(L10n.t("translate.pageMode.continuous")).tag(PageMode.continuous)
-                }
+                .frame(
+                    width: TranslateOptionsLayout.settingsWidth,
+                    height: TranslateOptionsLayout.panelHeight,
+                    alignment: .topLeading
+                )
             }
-            .formStyle(.grouped)
-            .frame(maxWidth: 560)
+            .frame(
+                width: TranslateOptionsLayout.panelWidth,
+                height: TranslateOptionsLayout.panelHeight,
+                alignment: .topLeading
+            )
+        }
+        .padding(.horizontal, TranslateOptionsLayout.windowHorizontal)
+        .padding(.top, TranslateOptionsLayout.windowTop)
+        .padding(.bottom, TranslateOptionsLayout.windowBottom)
+        .frame(
+            width: TranslateOptionsLayout.dialogWidth,
+            height: TranslateOptionsLayout.dialogHeight,
+            alignment: .topLeading
+        )
+    }
 
-            HStack {
+    private var sourcePreviewPane: some View {
+        VStack(spacing: 12) {
+            if let sourceURL = state.sourceURL {
+                PDFPagePreview(
+                    url: sourceURL,
+                    password: state.password,
+                    pageIndex: state.previewPageIndex
+                )
+                .allowsHitTesting(false)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(.quaternary, lineWidth: 1)
+                }
+                .frame(
+                    width: TranslateOptionsLayout.previewWidth,
+                    height: TranslateOptionsLayout.previewHeight
+                )
+            } else {
+                ContentUnavailableView {
+                    Label(L10n.t("viewer.noDocument"), systemImage: "doc")
+                }
+                .frame(
+                    width: TranslateOptionsLayout.previewWidth,
+                    height: TranslateOptionsLayout.previewHeight
+                )
+            }
+
+            HStack(spacing: 10) {
                 Button {
-                    startPipeline()
+                    state.movePreviewPage(by: -1)
                 } label: {
-                    Label(L10n.t("translate.start"), systemImage: "play.fill")
+                    Image(systemName: "chevron.left")
                 }
-                .buttonStyle(HoverButtonStyle(variant: .primary))
+                .buttonStyle(HoverButtonStyle(variant: .toolbar))
+                .disabled(!state.canMoveToPreviousPreviewPage)
+                .help(L10n.t("translate.preview.previousPage"))
 
-                Button(L10n.t("common.cancel")) {
-                    state.reset()
+                Text(state.previewPageDisplayText)
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 72)
+
+                Button {
+                    state.movePreviewPage(by: 1)
+                } label: {
+                    Image(systemName: "chevron.right")
                 }
-                .buttonStyle(HoverButtonStyle())
+                .buttonStyle(HoverButtonStyle(variant: .toolbar))
+                .disabled(!state.canMoveToNextPreviewPage)
+                .help(L10n.t("translate.preview.nextPage"))
             }
         }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(
+            width: TranslateOptionsLayout.previewWidth,
+            height: TranslateOptionsLayout.panelHeight,
+            alignment: .top
+        )
+    }
+
+    private var settingsPane: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L10n.t("translate.settings.title"))
+                .font(.headline)
+
+            VStack(spacing: 0) {
+                settingsRow(title: L10n.t("translate.content")) {
+                    Picker(L10n.t("translate.content"), selection: $state.options.content) {
+                        Text(L10n.t("translate.content.bilingual")).tag(OutputContent.bilingual)
+                        Text(L10n.t("translate.content.translationOnly")).tag(OutputContent.translationOnly)
+                        Text(L10n.t("translate.content.extractionOnly")).tag(OutputContent.extractionOnly)
+                    }
+                }
+                settingsDivider
+                settingsRow(title: L10n.t("translate.ocrLanguage")) {
+                    Picker(
+                        L10n.t("translate.ocrLanguage"),
+                        selection: Binding(
+                            get: { state.ocrLanguage },
+                            set: { state.setOCRLanguage($0) }
+                        )
+                    ) {
+                        ForEach(OCRLanguage.allCases, id: \.self) { language in
+                            Text(state.ocrLanguageLabel(for: language)).tag(language)
+                        }
+                    }
+                }
+                settingsDivider
+                settingsRow(title: L10n.t("translate.targetLanguage")) {
+                    Picker(L10n.t("translate.targetLanguage"), selection: $state.targetLanguage) {
+                        ForEach(TranslationTargetLanguage.allCases, id: \.self) { language in
+                            Text(TranslateFlowState.targetLanguageName(for: language)).tag(language)
+                        }
+                    }
+                }
+                settingsDivider
+                settingsRow(title: L10n.t("translate.format")) {
+                    Picker(L10n.t("translate.format"), selection: $state.options.format) {
+                        Text("Markdown").tag(OutputFormat.markdown)
+                        Text("PDF").tag(OutputFormat.pdf)
+                        Text("DOCX").tag(OutputFormat.docx)
+                    }
+                }
+                settingsDivider
+                settingsRow(title: L10n.t("translate.pageMode")) {
+                    Picker(L10n.t("translate.pageMode"), selection: $state.options.pageMode) {
+                        Text(L10n.t("translate.pageMode.pageAligned")).tag(PageMode.pageAligned)
+                        Text(L10n.t("translate.pageMode.continuous")).tag(PageMode.continuous)
+                    }
+                }
+            }
+            .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 6))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(.quaternary, lineWidth: 1)
+            }
+        }
+        .frame(width: TranslateOptionsLayout.settingsWidth, alignment: .leading)
+    }
+
+    private var settingsDivider: some View {
+        Divider()
+            .padding(.leading, 12)
+    }
+
+    private func settingsRow<Control: View>(
+        title: String,
+        @ViewBuilder control: () -> Control
+    ) -> some View {
+        HStack(spacing: 12) {
+            Text(title)
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.primary)
+                .frame(width: TranslateOptionsLayout.settingsLabelWidth, alignment: .leading)
+
+            Spacer(minLength: 12)
+
+            control()
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: TranslateOptionsLayout.settingsControlWidth, alignment: .trailing)
+        }
+        .padding(.horizontal, 12)
+        .frame(width: TranslateOptionsLayout.settingsWidth, height: TranslateOptionsLayout.settingsRowHeight)
+    }
+
+    private var optionsActionBar: some View {
+        HStack {
+            Button {
+                startPipeline()
+            } label: {
+                Label(L10n.t("translate.start"), systemImage: "play.fill")
+            }
+            .buttonStyle(HoverButtonStyle(variant: .primary))
+
+            Button(L10n.t("common.cancel")) {
+                closeFlow()
+            }
+            .buttonStyle(HoverButtonStyle())
+        }
+        .frame(width: TranslateOptionsLayout.settingsWidth, alignment: .trailing)
     }
 
     private var runningView: some View {
@@ -314,7 +459,7 @@ struct TranslateFlowView: View {
                 }
                 .buttonStyle(HoverButtonStyle())
                 Button(L10n.t("translate.newFile")) {
-                    state.reset()
+                    closeFlow()
                 }
                 .buttonStyle(HoverButtonStyle())
             }
@@ -366,7 +511,7 @@ struct TranslateFlowView: View {
             if check.exceeds {
                 softLimitWarning = TranslateSoftLimitWarning(url: url, password: password, check: check)
             } else {
-                acceptFile(url, password: password)
+                acceptFile(url, password: password, pageCount: check.pageCount)
             }
         } catch PDFLabError.encryptedPDFWrongPassword {
             passwordFailure = password == nil ? nil : L10n.message(for: .encryptedPDFWrongPassword)
@@ -378,9 +523,10 @@ struct TranslateFlowView: View {
         }
     }
 
-    private func acceptFile(_ url: URL, password: String?) {
+    private func acceptFile(_ url: URL, password: String?, pageCount: Int = 1) {
         // 需求 3.1:翻译模块导入的文件不进入历史(历史只记查看模块主文件)。
-        state.acceptFile(url, password: password)
+        state.acceptFile(url, password: password, pageCount: pageCount)
+        detectInitialOCRLanguage(url: url, password: password)
     }
 
     private func startPipeline() {
@@ -392,6 +538,8 @@ struct TranslateFlowView: View {
             url: sourceURL,
             password: state.password,
             options: state.options,
+            ocrLanguage: state.ocrLanguage,
+            targetLanguage: state.targetLanguage,
             forcedDirection: state.forcedDirection
         )
         let pipeline = TranslationPipeline(engine: app.makeEngine())
@@ -442,7 +590,41 @@ struct TranslateFlowView: View {
     private func cancelRunningTask() {
         runTask?.cancel()
         runTask = nil
+        closeFlow()
+    }
+
+    private func resetFlow() {
+        ocrDetectionTask?.cancel()
+        ocrDetectionTask = nil
         state.reset()
+    }
+
+    private func closeFlow() {
+        ocrDetectionTask?.cancel()
+        runTask?.cancel()
+        ocrDetectionTask = nil
+        runTask = nil
+        close()
+    }
+
+    private func detectInitialOCRLanguage(url: URL, password: String?) {
+        ocrDetectionTask?.cancel()
+        ocrDetectionTask = Task {
+            do {
+                let detected = try await TranslationPipeline.detectOCRLanguage(url: url, password: password)
+                await MainActor.run {
+                    guard state.sourceURL == url else { return }
+                    state.applyDetectedOCRLanguage(detected)
+                    ocrDetectionTask = nil
+                }
+            } catch {
+                await MainActor.run {
+                    guard state.sourceURL == url else { return }
+                    state.applyDetectedOCRLanguage(nil)
+                    ocrDetectionTask = nil
+                }
+            }
+        }
     }
 
     private func saveCurrentDocument() {
@@ -455,7 +637,9 @@ struct TranslateFlowView: View {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [saveContentType(for: state.options.format)]
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = defaultOutputName(sourceURL: sourceURL, format: state.options.format)
+        let defaultOutputURL = TranslateFlowState.defaultOutputURL(sourceURL: sourceURL, format: state.options.format)
+        panel.directoryURL = defaultOutputURL.deletingLastPathComponent()
+        panel.nameFieldStringValue = defaultOutputURL.lastPathComponent
 
         guard panel.runModal() == .OK, let outputURL = panel.url else { return }
 
@@ -498,11 +682,6 @@ struct TranslateFlowView: View {
         }
     }
 
-    private func defaultOutputName(sourceURL: URL, format: OutputFormat) -> String {
-        let base = sourceURL.deletingPathExtension().lastPathComponent
-        return "\(base)-translated.\(TranslateFlowState.fileExtension(for: format))"
-    }
-
     private func saveContentType(for format: OutputFormat) -> UTType {
         switch format {
         case .markdown:
@@ -525,6 +704,72 @@ struct TranslateFlowView: View {
     }
 }
 
+private struct PDFPagePreview: NSViewRepresentable {
+    let url: URL
+    let password: String?
+    let pageIndex: Int
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> PDFView {
+        let pdfView = NonScrollingPDFView()
+        pdfView.autoScales = true
+        pdfView.displayMode = .singlePage
+        pdfView.displayDirection = .vertical
+        pdfView.displaysPageBreaks = false
+        pdfView.backgroundColor = .clear
+        return pdfView
+    }
+
+    func updateNSView(_ pdfView: PDFView, context: Context) {
+        if context.coordinator.loadedURL != url || context.coordinator.loadedPassword != password {
+            context.coordinator.loadedURL = url
+            context.coordinator.loadedPassword = password
+
+            let document = PDFDocument(url: url)
+            if document?.isLocked == true, let password {
+                document?.unlock(withPassword: password)
+            }
+            pdfView.document = document
+            pdfView.autoScales = true
+        }
+
+        guard let document = pdfView.document, document.pageCount > 0 else { return }
+        let clampedIndex = min(max(pageIndex, 0), document.pageCount - 1)
+        guard let page = document.page(at: clampedIndex) else { return }
+        pdfView.go(to: page)
+    }
+
+    final class Coordinator {
+        var loadedURL: URL?
+        var loadedPassword: String?
+    }
+}
+
+enum TranslateOptionsLayout {
+    static let dialogWidth: CGFloat = 900
+    static let dialogHeight: CGFloat = 620
+    static let windowHorizontal: CGFloat = 28
+    static let windowTop: CGFloat = 28
+    static let windowBottom: CGFloat = 24
+    static let panelWidth: CGFloat = dialogWidth - windowHorizontal * 2
+    static let panelHeight: CGFloat = dialogHeight - windowTop - windowBottom
+    static let columnGap: CGFloat = 32
+    static let sectionGap: CGFloat = 16
+    static let previewWidth: CGFloat = 360
+    static let previewHeight: CGFloat = 520
+    static let settingsWidth: CGFloat = panelWidth - previewWidth - columnGap
+    static let settingsLabelWidth: CGFloat = 112
+    static let settingsControlWidth: CGFloat = 165
+    static let settingsRowHeight: CGFloat = 40
+}
+
+private final class NonScrollingPDFView: PDFView {
+    override func scrollWheel(with event: NSEvent) {}
+}
+
 private struct TranslatePasswordRequest {
     var url: URL
 }
@@ -539,11 +784,52 @@ private struct TranslateSoftLimitWarning {
     }
 }
 
-private struct TranslateDirectionRequest {
+private struct TranslateDirectionRequest: Identifiable {
+    let id = UUID()
     var detected: String
 
     var message: String {
         "\(L10n.t("translate.unsupportedLanguage.message")) (\(detected))"
+    }
+}
+
+private struct UnsupportedLanguageDialog: View {
+    var request: TranslateDirectionRequest
+    var chooseEnglish: () -> Void
+    var chooseChinese: () -> Void
+    var cancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(L10n.t("translate.unsupportedLanguage.title"))
+                    .font(.title3.weight(.semibold))
+                Text(request.message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                Button(L10n.t("translate.direction.english")) {
+                    chooseEnglish()
+                }
+                .buttonStyle(HoverButtonStyle(variant: .primary))
+
+                Button(L10n.t("translate.direction.chinese")) {
+                    chooseChinese()
+                }
+                .buttonStyle(HoverButtonStyle())
+
+                Spacer()
+
+                Button(L10n.t("common.cancel"), role: .cancel) {
+                    cancel()
+                }
+                .buttonStyle(HoverButtonStyle())
+            }
+        }
+        .padding(22)
+        .frame(width: 420)
     }
 }
 

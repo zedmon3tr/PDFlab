@@ -35,8 +35,6 @@ struct DualPaneView: View {
     var ratioA: Double
     var ratioB: Double
     var readingLayout: ViewerReadingLayout
-    /// 划选气泡翻译服务(两侧面板各挂一个 SelectionTranslationController)。
-    let translation: ViewerTranslationService
 
     /// 左栏占比(0...1),拖动分隔条时更新。
     @State private var dividerFraction: CGFloat = 0.5
@@ -53,6 +51,20 @@ struct DualPaneView: View {
         minPaneWidth: minPaneWidth
     )
 
+    /// Side-by-side comparison panes are ALWAYS continuous, regardless of whatever
+    /// `readingLayout` the user picked while viewing a single document. The reading-layout
+    /// picker is deliberately hidden in side-by-side mode (`ViewerToolbarPolicy
+    /// .showsReadingLayoutControl`), but the underlying preference value persists across
+    /// mode switches, so a paginated layout carried over from single-document mode would
+    /// otherwise silently break sync-scroll here: a paginated PDFView has near-zero
+    /// scrollable content height per page (sync math's `maxOffset > 0` guard bails out) and
+    /// page-turns don't fire `boundsDidChangeNotification`, which the sync coordinator
+    /// exclusively listens to. Ignores `preference` entirely by design — kept as a parameter
+    /// only so the call sites below read as an explicit, intentional override.
+    static func paneReadingLayout(for preference: ViewerReadingLayout) -> ViewerReadingLayout {
+        .continuous
+    }
+
     var body: some View {
         GeometryReader { geo in
             let width = geo.size.width
@@ -65,8 +77,12 @@ struct DualPaneView: View {
                     document: left,
                     side: .left,
                     sync: sync,
-                    readingLayout: readingLayout,
-                    translation: translation
+                    // Dual-pane sync-scroll fundamentally requires continuous, non-paginated
+                    // PDFViews (see DualPaneView.paneReadingLayout(for:) doc). The
+                    // `readingLayout` preference is intentionally NOT threaded through as-is
+                    // here — it only applies to single-document viewing, where its picker is
+                    // actually shown.
+                    readingLayout: Self.paneReadingLayout(for: readingLayout)
                 )
                     .frame(width: leftWidth)
                     .id(left.id)
@@ -77,8 +93,7 @@ struct DualPaneView: View {
                     document: right,
                     side: .right,
                     sync: sync,
-                    readingLayout: readingLayout,
-                    translation: translation
+                    readingLayout: Self.paneReadingLayout(for: readingLayout)
                 )
                     .frame(maxWidth: .infinity)
                     .id(right.id)
@@ -151,7 +166,7 @@ private struct DividerHandle: View {
         }
         .frame(width: thickness)
         .frame(maxHeight: .infinity)
-        .pointerStyle(.columnResize)
+        .columnResizePointerStyleIfAvailable()
         .onHover { isHovering = $0 }
         .help(L10n.t("viewer.divider.resize"))
     }
@@ -167,6 +182,17 @@ private struct DividerHandle: View {
     }
 }
 
+private extension View {
+    @ViewBuilder
+    func columnResizePointerStyleIfAvailable() -> some View {
+        if #available(macOS 15.0, *) {
+            pointerStyle(.columnResize)
+        } else {
+            self
+        }
+    }
+}
+
 // MARK: - 单面板(NSViewRepresentable,按 kind 建 PDFView / NSTextView / 提示 label)
 
 /// 单侧文档面板。makeNSView 按 document.kind 建视图,并把该侧 scrollView/pdfView 注册进 sync;
@@ -176,10 +202,9 @@ private struct SinglePaneRepresentable: NSViewRepresentable {
     let side: SyncScrollCoordinator.Side
     let sync: SyncScrollCoordinator
     let readingLayout: ViewerReadingLayout
-    let translation: ViewerTranslationService
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(sync: sync, side: side, translation: translation)
+        Coordinator(sync: sync, side: side)
     }
 
     func makeNSView(context: Context) -> NSView {
@@ -256,29 +281,18 @@ private struct SinglePaneRepresentable: NSViewRepresentable {
     final class Coordinator {
         private let sync: SyncScrollCoordinator
         private let side: SyncScrollCoordinator.Side
-        private let selectionTranslation: SelectionTranslationController
         private weak var view: NSView?
         private weak var pdfView: PDFView?
 
-        init(sync: SyncScrollCoordinator, side: SyncScrollCoordinator.Side, translation: ViewerTranslationService) {
+        init(sync: SyncScrollCoordinator, side: SyncScrollCoordinator.Side) {
             self.sync = sync
             self.side = side
-            self.selectionTranslation = SelectionTranslationController(translation: translation)
         }
 
         func attach(view: NSView, scrollView: NSScrollView?, pdfView: PDFView?) {
             self.view = view
             self.pdfView = pdfView
             sync.register(side: side, view: view, scrollView: scrollView, pdfView: pdfView)
-            // 划选气泡:PDF 面板挂 PDFView,文本面板挂 scrollView 里的 NSTextView。
-            // attach 由 makeNSView(主线程)调用,assumeIsolated 安全。
-            MainActor.assumeIsolated {
-                if let pdfView {
-                    selectionTranslation.attach(to: pdfView)
-                } else if let textView = scrollView?.documentView as? NSTextView {
-                    selectionTranslation.attach(to: textView)
-                }
-            }
             // PDFView 的 scrollView 首帧常未就绪:下一 runloop 再让 sync 补找一次。
             DispatchQueue.main.async { [weak self] in
                 self?.sync.refreshRegistration(side: self?.side ?? .left)
@@ -297,9 +311,6 @@ private struct SinglePaneRepresentable: NSViewRepresentable {
 
         func detach() {
             sync.unregister(side: side)
-            MainActor.assumeIsolated {
-                selectionTranslation.detach()
-            }
         }
     }
 }
@@ -418,7 +429,7 @@ final class SyncScrollCoordinator: ObservableObject {
         detachObservers()
     }
 
-    // MARK: 同步逻辑(一比一保留)
+    // MARK: 同步逻辑
 
     private func scrollChanged(from side: Side) {
         guard !isSyncing,
@@ -448,17 +459,18 @@ final class SyncScrollCoordinator: ObservableObject {
         let didMove: Bool
         if let sourcePDF = source.pdfView,
            let targetPDF = target.pdfView,
-           let sourcePageCount = source.pageCount,
-           let targetPageCount = target.pageCount,
-           sourcePageCount > 0,
-           sourcePageCount == targetPageCount {
-            // 精确模式:页数相同的两 PDF 走页锚点几何同步。
+           math.usesPageAnchoredSync(
+                sourcePageCount: source.pageCount,
+                targetPageCount: target.pageCount
+           ) {
+            // 精确模式:页数相同且左右比例一致的两 PDF 走页锚点几何同步。
             didMove = Self.syncPageAnchored(from: sourcePDF, to: targetPDF)
         } else {
             // 兜底:按屏绝对映射。目标位置是源位置的纯函数,不累加,长距离不漂移。
             let sourceViewport = sourceScroll.contentView.bounds.height
             if sourceViewport > 0 {
-                let sourceScreens = Double(sourceOffset) / Double(sourceViewport)
+                let sourceVisualOffset = Self.visualOffsetFromTop(in: sourceScroll)
+                let sourceScreens = Double(sourceVisualOffset) / Double(sourceViewport)
                 let targetScreens = side == .left
                     ? math.targetScreens(fromA: sourceScreens)
                     : math.targetScreens(fromB: sourceScreens)
@@ -522,20 +534,40 @@ final class SyncScrollCoordinator: ObservableObject {
         return true
     }
 
-    /// 按屏绝对映射滚动目标侧:targetScreens 屏 × 目标视口高度 = 目标绝对偏移,截断后直接定位。
+    /// 按屏绝对映射滚动目标侧:targetScreens 屏 × 目标视口高度 = 目标视觉距顶偏移,截断后转回原始坐标定位。
     /// 已在目标 ε 邻域内则不动(收敛截断,断开互踢环路)。返回是否真正移动。
     @discardableResult
     private static func applyAbsoluteScreens(_ targetScreens: Double, to scrollView: NSScrollView) -> Bool {
         let visible = scrollView.contentView.bounds
         let documentHeight = scrollView.documentView?.bounds.height ?? 0
-        let maxOffset = documentHeight - visible.height
+        let maxOffset = max(documentHeight - visible.height, 0)
         guard maxOffset > 0, visible.height > 0, targetScreens.isFinite else { return false }
 
-        let targetY = min(max(CGFloat(targetScreens) * visible.height, 0), maxOffset)
+        let targetVisualY = min(max(CGFloat(targetScreens) * visible.height, 0), maxOffset)
+        let targetY = rawOffset(fromVisualOffset: targetVisualY, maxOffset: maxOffset, in: scrollView)
         guard abs(targetY - visible.origin.y) >= offsetTolerance else { return false }
         scrollView.contentView.setBoundsOrigin(NSPoint(x: visible.origin.x, y: targetY))
         scrollView.reflectScrolledClipView(scrollView.contentView)
         return true
+    }
+
+    private static func visualOffsetFromTop(in scrollView: NSScrollView) -> CGFloat {
+        let visible = scrollView.contentView.bounds
+        let documentHeight = scrollView.documentView?.bounds.height ?? 0
+        let maxOffset = max(documentHeight - visible.height, 0)
+        return CGFloat(ScrollSyncMath.visualOffsetFromTop(
+            rawOffset: Double(visible.origin.y),
+            maxOffset: Double(maxOffset),
+            isFlipped: scrollView.documentView?.isFlipped ?? true
+        ))
+    }
+
+    private static func rawOffset(fromVisualOffset visualOffset: CGFloat, maxOffset: CGFloat, in scrollView: NSScrollView) -> CGFloat {
+        CGFloat(ScrollSyncMath.rawOffset(
+            fromVisualOffset: Double(visualOffset),
+            maxOffset: Double(maxOffset),
+            isFlipped: scrollView.documentView?.isFlipped ?? true
+        ))
     }
 
     static func findScrollView(in view: NSView) -> NSScrollView? {

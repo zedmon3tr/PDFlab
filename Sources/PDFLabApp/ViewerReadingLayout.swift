@@ -47,9 +47,19 @@ enum ViewerReadingLayout: String, CaseIterable, Identifiable {
         let modeChanged = pdfView.displayMode != pdfDisplayMode
         let destination = modeChanged ? Self.visibleDestination(in: pdfView) : nil
 
-        pdfView.displayMode = pdfDisplayMode
-        pdfView.displayDirection = .vertical
-        pdfView.displaysPageBreaks = true
+        // Only touch PDFKit setters when the value actually differs: apply(to:)
+        // runs on every SwiftUI re-render,
+        // and unconditional writes here fire PDFKit relayout/redraw churn even
+        // when nothing about the reading layout changed.
+        if pdfView.displayMode != pdfDisplayMode {
+            pdfView.displayMode = pdfDisplayMode
+        }
+        if pdfView.displayDirection != .vertical {
+            pdfView.displayDirection = .vertical
+        }
+        if pdfView.displaysPageBreaks != true {
+            pdfView.displaysPageBreaks = true
+        }
 
         guard modeChanged else { return }
         pdfView.layoutDocumentView()

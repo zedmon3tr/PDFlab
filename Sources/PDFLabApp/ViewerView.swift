@@ -28,12 +28,6 @@ struct ViewerView: View {
     @State private var passwordRequest: PasswordRequest?
     @State private var passwordInput = ""
     @State private var passwordFailure: String?
-    @State private var paragraphTranslations: [ParagraphTranslationEntry] = []
-    @State private var paragraphHighlight: ParagraphHighlight?
-    @State private var paragraphTranslationTasks = ParagraphTranslationTaskRegistry()
-    @State private var isFullPageTranslationEnabled = false
-    @State private var fullPageTranslationState = FullPageTranslationState()
-    @State private var fullPageTranslationTask: Task<Void, Never>?
 
     init(
         url: URL,
@@ -61,11 +55,11 @@ struct ViewerView: View {
                         ratioControl(L10n.t("viewer.rightRatio"), value: $ratioB)
                         resetRatioButton
                     }
-                    if hasPDFDocument {
+                    if ViewerToolbarPolicy.showsReadingLayoutControl(
+                        hasPDFDocument: hasPDFDocument,
+                        isSideBySide: effectiveLayout == .sideBySide
+                    ) {
                         readingLayoutControl
-                    }
-                    if canUseFullPageTranslation {
-                        fullPageTranslationToggle
                     }
                     // 两文档打开时始终显示单看↔并排分段开关(用于随时切回并排)。
                     if secondary != nil {
@@ -74,7 +68,6 @@ struct ViewerView: View {
                 }
             }
             .onAppear(perform: loadInitialDocuments)
-            .onDisappear(perform: resetTranslationState)
             .alert(item: $alert) { item in
                 Alert(
                     title: Text(item.title),
@@ -140,33 +133,20 @@ struct ViewerView: View {
                         right: secondary,
                         ratioA: ratioA,
                         ratioB: ratioB,
-                        readingLayout: readingLayout,
-                        translation: app.viewerTranslation
+                        readingLayout: readingLayout
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    singleDocumentContent(
-                        primary,
-                        paragraphClick: paragraphClickConfiguration(for: primary),
-                        pageContext: paragraphPageContextConfiguration(for: primary)
-                    )
+                    singleDocumentContent(primary)
                 }
             case .single(.secondary):
                 if let secondary {
-                    singleDocumentContent(secondary, paragraphClick: nil, pageContext: nil)
+                    singleDocumentContent(secondary)
                 } else {
-                    singleDocumentContent(
-                        primary,
-                        paragraphClick: paragraphClickConfiguration(for: primary),
-                        pageContext: paragraphPageContextConfiguration(for: primary)
-                    )
+                    singleDocumentContent(primary)
                 }
             case .single(.primary):
-                singleDocumentContent(
-                    primary,
-                    paragraphClick: paragraphClickConfiguration(for: primary),
-                    pageContext: paragraphPageContextConfiguration(for: primary)
-                )
+                singleDocumentContent(primary)
             }
         } else {
             Text(L10n.t("viewer.noDocument"))
@@ -176,26 +156,8 @@ struct ViewerView: View {
     }
 
     @ViewBuilder
-    private func singleDocumentContent(
-        _ document: ViewerDocument,
-        paragraphClick: ParagraphClickConfiguration?,
-        pageContext: ParagraphPageContextConfiguration?
-    ) -> some View {
-        HStack(spacing: 0) {
-            SingleDocumentView(
-                document: document,
-                readingLayout: readingLayout,
-                translation: app.viewerTranslation,
-                paragraphClick: paragraphClick,
-                pageContext: pageContext
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            if !paragraphTranslations.isEmpty {
-                Divider()
-                TranslationSidebar(entries: paragraphTranslations, onClear: clearSidebarTranslations)
-            }
-        }
+    private func singleDocumentContent(_ document: ViewerDocument) -> some View {
+        SingleDocumentView(document: document, readingLayout: readingLayout)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -294,26 +256,26 @@ struct ViewerView: View {
 
     // 关闭 secondary:回到 primary 单文档。
     private func closeSecondary() {
-        resetTranslationState()
         secondary = nil
         layout = .single(.primary)
-        ratioA = 1.0
-        ratioB = 1.0
+        resetRatios()
     }
 
     // 关闭 primary:secondary 晋升为唯一文档(晋升不写历史);无 secondary 则返回主界面。
     private func closePrimary() {
         if let promoted = secondary {
-            resetTranslationState()
             primary = promoted
             secondary = nil
             layout = .single(.primary)
-            ratioA = 1.0
-            ratioB = 1.0
+            resetRatios()
         } else {
-            resetTranslationState()
             onClose()
         }
+    }
+
+    private func resetRatios() {
+        ratioA = 1.0
+        ratioB = 1.0
     }
 
     /// 单看 ↔ 并排分段开关(工具栏,仅两文档打开时显示)。
@@ -352,96 +314,6 @@ struct ViewerView: View {
         primary?.kind == .pdf || secondary?.kind == .pdf
     }
 
-    private var canUseFullPageTranslation: Bool {
-        secondary == nil && primary?.kind == .pdf
-    }
-
-    private func paragraphClickConfiguration(for document: ViewerDocument) -> ParagraphClickConfiguration? {
-        guard secondary == nil, document.kind == .pdf, !isFullPageTranslationEnabled else { return nil }
-        return ParagraphClickConfiguration(
-            highlight: paragraphHighlight,
-            onSelection: { selection in
-                handleParagraphSelection(selection)
-            },
-            onMiss: {
-                paragraphHighlight = nil
-            }
-        )
-    }
-
-    private func paragraphPageContextConfiguration(for document: ViewerDocument) -> ParagraphPageContextConfiguration? {
-        guard canUseFullPageTranslation, isFullPageTranslationEnabled, document.id == primary?.id else { return nil }
-        return ParagraphPageContextConfiguration { context in
-            handleFullPageContext(context)
-        }
-    }
-
-    private func handleParagraphSelection(_ selection: ParagraphClickSelection) {
-        paragraphHighlight = ParagraphHighlight(pageIndex: selection.pageIndex, bbox: selection.paragraph.bbox)
-        let entry = ParagraphTranslationEntry(pageIndex: selection.pageIndex, sourceText: selection.paragraph.text)
-        paragraphTranslations.append(entry)
-
-        let registry = paragraphTranslationTasks
-        let task = Task { [entryID = entry.id, text = selection.paragraph.text, translation = app.viewerTranslation, registry] in
-            defer {
-                Task { @MainActor in
-                    registry.remove(entryID)
-                }
-            }
-            do {
-                let result = try await translation.translate(text)
-                await MainActor.run {
-                    updateParagraphTranslation(entryID, state: .translated(result.text))
-                }
-            } catch is CancellationError {
-                // Clearing the sidebar can make this result irrelevant; leave silently.
-            } catch PDFLabError.cancelled {
-                // Same cancellation path as the selection bubble.
-            } catch {
-                let presentation = SelectionBubbleFailure.presentation(for: error)
-                await MainActor.run {
-                    updateParagraphTranslation(
-                        entryID,
-                        state: .failed(
-                            message: presentation.message,
-                            suggestsEngineSwitch: presentation.suggestsEngineSwitch
-                        )
-                    )
-                }
-            }
-        }
-        paragraphTranslationTasks.insert(task, for: entry.id)
-    }
-
-    private func updateParagraphTranslation(_ id: UUID, state: ParagraphTranslationState) {
-        guard let index = paragraphTranslations.firstIndex(where: { $0.id == id }) else { return }
-        paragraphTranslations[index].state = state
-    }
-
-    private func clearParagraphTranslations() {
-        paragraphTranslationTasks.cancelAll()
-        paragraphTranslations.removeAll()
-        paragraphHighlight = nil
-    }
-
-    private func clearSidebarTranslations() {
-        if isFullPageTranslationEnabled {
-            disableFullPageTranslation()
-        } else {
-            clearParagraphTranslations()
-        }
-    }
-
-    private func resetTranslationState() {
-        paragraphTranslationTasks.cancelAll()
-        fullPageTranslationTask?.cancel()
-        fullPageTranslationTask = nil
-        _ = fullPageTranslationState.disable()
-        isFullPageTranslationEnabled = false
-        paragraphTranslations.removeAll()
-        paragraphHighlight = nil
-    }
-
     private var readingLayoutControl: some View {
         Picker(L10n.t("viewer.pageLayout"), selection: $readingLayout) {
             ForEach(ViewerReadingLayout.allCases) { layout in
@@ -454,123 +326,6 @@ struct ViewerView: View {
         .labelsHidden()
         .fixedSize()
         .help(L10n.t("viewer.pageLayout"))
-    }
-
-    private var fullPageTranslationToggle: some View {
-        Toggle(
-            isOn: Binding(
-                get: { isFullPageTranslationEnabled },
-                set: { enabled in
-                    if enabled {
-                        enableFullPageTranslation()
-                    } else {
-                        disableFullPageTranslation()
-                    }
-                }
-            )
-        ) {
-            Label(L10n.t("viewer.fullPageTranslation"), systemImage: "doc.text")
-        }
-        .toggleStyle(.button)
-        .help(L10n.t("viewer.fullPageTranslation"))
-    }
-
-    private func enableFullPageTranslation() {
-        guard canUseFullPageTranslation else { return }
-        clearParagraphTranslations()
-        fullPageTranslationTask?.cancel()
-        fullPageTranslationTask = nil
-        fullPageTranslationState = FullPageTranslationState()
-        fullPageTranslationState.enable()
-        isFullPageTranslationEnabled = true
-        paragraphHighlight = nil
-    }
-
-    private func disableFullPageTranslation() {
-        fullPageTranslationTask?.cancel()
-        fullPageTranslationTask = nil
-        paragraphTranslations = fullPageTranslationState.disable()
-        isFullPageTranslationEnabled = false
-        paragraphHighlight = nil
-    }
-
-    private func handleFullPageContext(_ context: ParagraphPageContext) {
-        switch fullPageTranslationState.request(context) {
-        case .ignored:
-            return
-        case .showCached(let entries):
-            fullPageTranslationTask?.cancel()
-            fullPageTranslationTask = nil
-            paragraphTranslations = entries
-        case .showLoading(let entries):
-            paragraphTranslations = entries
-        case .showEmpty:
-            fullPageTranslationTask?.cancel()
-            fullPageTranslationTask = nil
-            paragraphTranslations.removeAll()
-        case .start(let token, let entries, let texts):
-            fullPageTranslationTask?.cancel()
-            paragraphHighlight = nil
-            paragraphTranslations = entries
-            startFullPageTranslation(token: token, loadingEntries: entries, texts: texts)
-        }
-    }
-
-    private func startFullPageTranslation(
-        token: FullPageTranslationToken,
-        loadingEntries: [ParagraphTranslationEntry],
-        texts: [String]
-    ) {
-        let sample = texts.joined(separator: "\n\n")
-        guard let direction = LanguageDetector.detectDirection(sample: sample) else {
-            let error = PDFLabError.unsupportedLanguage(detected: LanguageDetector.detectedLanguageName(sample: sample))
-            if let entries = fullPageTranslationState.fail(
-                token,
-                message: L10n.message(for: error),
-                suggestsEngineSwitch: false
-            ) {
-                paragraphTranslations = entries
-            }
-            fullPageTranslationTask = nil
-            return
-        }
-
-        let translation = app.viewerTranslation
-        fullPageTranslationTask = Task { [token, loadingEntries, texts, direction, translation] in
-            do {
-                let results = try await translation.translateBatch(texts, direction: direction)
-                guard results.count == loadingEntries.count else {
-                    throw PDFLabError.engineUnavailable(engineID: "viewer")
-                }
-                let translatedEntries = loadingEntries.enumerated().map { index, entry in
-                    var updated = entry
-                    updated.state = .translated(results[index])
-                    return updated
-                }
-                await MainActor.run {
-                    if let entries = fullPageTranslationState.succeed(token, entries: translatedEntries) {
-                        paragraphTranslations = entries
-                        fullPageTranslationTask = nil
-                    }
-                }
-            } catch is CancellationError {
-                // Page turns or mode changes make this result irrelevant.
-            } catch PDFLabError.cancelled {
-                // Same cancellation path as selection translation.
-            } catch {
-                let presentation = SelectionBubbleFailure.presentation(for: error)
-                await MainActor.run {
-                    if let entries = fullPageTranslationState.fail(
-                        token,
-                        message: presentation.message,
-                        suggestsEngineSwitch: presentation.suggestsEngineSwitch
-                    ) {
-                        paragraphTranslations = entries
-                        fullPageTranslationTask = nil
-                    }
-                }
-            }
-        }
     }
 
     // macOS 工具栏常不渲染 Stepper 的 label,数值必须用独立 Text 显式呈现。
@@ -591,8 +346,7 @@ struct ViewerView: View {
 
     private var resetRatioButton: some View {
         Button {
-            ratioA = 1.0
-            ratioB = 1.0
+            resetRatios()
         } label: {
             Label(L10n.t("viewer.resetRatio"), systemImage: "arrow.counterclockwise")
         }
@@ -667,13 +421,10 @@ struct ViewerView: View {
     private func assign(_ document: ViewerDocument, side: ViewerSide) {
         switch side {
         case .primary:
-            resetTranslationState()
             primary = document
         case .secondary:
-            resetTranslationState()
             // 每次进入/更换对照文档时把滚动比例恢复默认,不带上次残留值。
-            ratioA = 1.0
-            ratioB = 1.0
+            resetRatios()
             secondary = document
             // 加第二个文档的意图即对照:立即并排。
             layout = .sideBySide
@@ -717,12 +468,9 @@ private struct TabCloseButtonStyle: ButtonStyle {
                 .animation(.easeOut(duration: 0.1), value: isHovering)
                 .onHover { hovering in
                     isHovering = hovering
-                    if hovering {
-                        NSCursor.pointingHand.push()
-                    } else {
-                        NSCursor.pop()
-                    }
                 }
+                .onDisappear { isHovering = false }
+                .clickableHoverCursor()
         }
     }
 }
@@ -742,6 +490,12 @@ private enum ViewerLayout: Equatable {
 private enum ViewMode: Hashable {
     case single
     case sideBySide
+}
+
+enum ViewerToolbarPolicy {
+    static func showsReadingLayoutControl(hasPDFDocument: Bool, isSideBySide: Bool) -> Bool {
+        hasPDFDocument && !isSideBySide
+    }
 }
 
 private struct PasswordRequest {

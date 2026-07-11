@@ -29,8 +29,8 @@ struct MainHistoryState: Equatable {
 
 enum ViewerSecondaryDocumentPicker {
     static var allowedContentTypes: [UTType] {
-        var types: [UTType] = [.pdf, .plainText, .text]
-        for ext in ["md", "markdown", "docx"] {
+        var types: [UTType] = [.pdf, .plainText]
+        for ext in ["md"] {
             if let type = UTType(filenameExtension: ext) {
                 types.append(type)
             }
@@ -87,17 +87,9 @@ private struct HoverButtonBody: View {
             .animation(.easeOut(duration: 0.12), value: isHovering)
             .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
             .onHover { hovering in
-                guard isEnabled else {
-                    isHovering = false
-                    return
-                }
-                isHovering = hovering
-                if hovering {
-                    NSCursor.pointingHand.push()
-                } else {
-                    NSCursor.pop()
-                }
+                isHovering = isEnabled && hovering
             }
+            .clickableHoverCursor(enabled: isEnabled)
     }
 
     private var horizontalPadding: CGFloat {
@@ -161,17 +153,57 @@ struct HoverHighlightModifier: ViewModifier {
             .animation(.easeOut(duration: 0.12), value: isHovering)
             .onHover { hovering in
                 isHovering = hovering
-                if hovering {
-                    NSCursor.pointingHand.push()
-                } else {
-                    NSCursor.pop()
-                }
             }
+            .onDisappear { isHovering = false }
+            .clickableHoverCursor()
     }
 }
 
 extension View {
     func hoverHighlight() -> some View {
         modifier(HoverHighlightModifier())
+    }
+
+    /// 可点击区域的悬停光标。
+    /// macOS 15+ 走 SwiftUI 原生 `pointerStyle`——按视图作用域自动管理,离开即恢复,
+    /// 不碰进程级 NSCursor 栈,因此不会出现 push/pop 失衡导致别处(如工具栏设置按钮)
+    /// 光标卡住的老问题。macOS 14 回退到 push/pop,但用 didPush 守卫 + onDisappear/禁用
+    /// 兜底,保证每次 push 都有且仅有一次配对 pop。
+    @ViewBuilder
+    func clickableHoverCursor(enabled: Bool = true) -> some View {
+        if #available(macOS 15.0, *) {
+            pointerStyle(enabled ? .link : nil)
+        } else {
+            modifier(LegacyHoverCursor(enabled: enabled))
+        }
+    }
+}
+
+/// macOS 14 兜底:配平的 NSCursor push/pop。
+private struct LegacyHoverCursor: ViewModifier {
+    let enabled: Bool
+    @State private var didPush = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { hovering in
+                if hovering && enabled {
+                    guard !didPush else { return }
+                    NSCursor.pointingHand.push()
+                    didPush = true
+                } else {
+                    popIfNeeded()
+                }
+            }
+            .onChange(of: enabled) { _, newValue in
+                if !newValue { popIfNeeded() }
+            }
+            .onDisappear { popIfNeeded() }
+    }
+
+    private func popIfNeeded() {
+        guard didPush else { return }
+        NSCursor.pop()
+        didPush = false
     }
 }

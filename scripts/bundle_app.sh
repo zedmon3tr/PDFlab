@@ -12,6 +12,7 @@ RESOURCES_DIR="$CONTENTS_DIR/Resources"
 BINARY_SRC="$ROOT/.build/release/PDFLabApp"
 BINARY_DST="$MACOS_DIR/$APP_NAME"
 VERSION="$(bash "$ROOT/scripts/app_version.sh")"
+ICON_SRC="$ROOT/Resources/AppIcon.icns"
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Library/Developer/CommandLineTools}"
 
@@ -21,6 +22,9 @@ swift build -c release
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp "$BINARY_SRC" "$BINARY_DST"
+if [[ -f "$ICON_SRC" ]]; then
+    cp "$ICON_SRC" "$RESOURCES_DIR/AppIcon.icns"
+fi
 
 cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -33,6 +37,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
     <string>$APP_NAME</string>
     <key>CFBundleIdentifier</key>
     <string>$BUNDLE_ID</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -44,7 +50,7 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
-    <string>15.0</string>
+    <string>14.0</string>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 PDFlab contributors. All rights reserved.</string>
 </dict>
