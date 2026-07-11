@@ -243,13 +243,13 @@ struct ViewerView: View {
             .help(L10n.t("viewer.closeTab"))
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.vertical, 4)
         .background(
             (isActive ? Color(nsColor: .selectedContentBackgroundColor).opacity(0.18) : Color(nsColor: .windowBackgroundColor)),
-            in: RoundedRectangle(cornerRadius: 7)
+            in: RoundedRectangle(cornerRadius: 8)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 7)
+            RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(Color.primary.opacity(isActive ? 0.16 : 0.08), lineWidth: 1)
         )
     }

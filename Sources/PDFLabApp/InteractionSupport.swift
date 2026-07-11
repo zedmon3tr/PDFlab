@@ -49,6 +49,30 @@ enum ViewerSecondaryDocumentPicker {
     }
 }
 
+/// 悬停/按压反馈的动效决策——抽成纯函数以便单测覆盖 Reduce Motion 行为。
+enum HoverMotion {
+    /// 按压时的缩放系数。Reduce Motion 开启时不缩放,只保留透明度反馈。
+    static func pressedScale(isPressed: Bool, reduceMotion: Bool) -> CGFloat {
+        guard isPressed, !reduceMotion else { return 1 }
+        return 0.98
+    }
+
+    /// 悬停/按压动画时长。Reduce Motion 开启时收敛为近乎即时的极短淡变。
+    static func animationDuration(base: Double, reduceMotion: Bool) -> Double {
+        reduceMotion ? min(base, 0.01) : base
+    }
+}
+
+/// 增强对比度下的描边不透明度决策——抽成纯函数以便单测覆盖。
+/// DESIGN.md:增强对比度开启时提高边界层级,不依赖低透明度维持层次。
+enum HoverContrast {
+    /// 只强化本就存在的边界(`base > 0`),不在静止态(`base == 0`)凭空造边框。
+    static func strokeOpacity(base: Double, increasedContrast: Bool) -> Double {
+        guard increasedContrast, base > 0 else { return base }
+        return min(base * 1.875 + 0.10, 1.0)
+    }
+}
+
 struct HoverButtonStyle: ButtonStyle {
     enum Variant {
         case plain
@@ -69,6 +93,8 @@ private struct HoverButtonBody: View {
     let variant: HoverButtonStyle.Variant
 
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @State private var isHovering = false
 
     var body: some View {
@@ -77,15 +103,15 @@ private struct HoverButtonBody: View {
             .foregroundStyle(foreground)
             .padding(.horizontal, horizontalPadding)
             .padding(.vertical, verticalPadding)
-            .background(background, in: RoundedRectangle(cornerRadius: 7))
+            .background(background, in: RoundedRectangle(cornerRadius: 8))
             .overlay(
-                RoundedRectangle(cornerRadius: 7)
+                RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(stroke, lineWidth: 1)
             )
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .scaleEffect(HoverMotion.pressedScale(isPressed: configuration.isPressed, reduceMotion: reduceMotion))
             .opacity(isEnabled ? (configuration.isPressed ? 0.82 : 1) : 0.46)
-            .animation(.easeOut(duration: 0.12), value: isHovering)
-            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+            .animation(.easeOut(duration: HoverMotion.animationDuration(base: 0.12, reduceMotion: reduceMotion)), value: isHovering)
+            .animation(.easeOut(duration: HoverMotion.animationDuration(base: 0.08, reduceMotion: reduceMotion)), value: configuration.isPressed)
             .onHover { hovering in
                 isHovering = isEnabled && hovering
             }
@@ -97,7 +123,11 @@ private struct HoverButtonBody: View {
     }
 
     private var verticalPadding: CGFloat {
-        variant == .toolbar ? 5 : 7
+        variant == .toolbar ? 4 : 6
+    }
+
+    private var increasedContrast: Bool {
+        colorSchemeContrast == .increased
     }
 
     private var foreground: AnyShapeStyle {
@@ -116,7 +146,7 @@ private struct HoverButtonBody: View {
         guard isEnabled else { return Color.primary.opacity(0.02) }
         switch variant {
         case .primary:
-            return Color.accentColor.opacity(isHovering ? 0.92 : 0.82)
+            return isHovering ? Color.accentColor.opacity(0.9) : Color.accentColor
         case .danger:
             return Color.red.opacity(isHovering ? 0.12 : 0.05)
         case .plain, .toolbar:
@@ -128,17 +158,23 @@ private struct HoverButtonBody: View {
         guard isEnabled else { return Color.primary.opacity(0.06) }
         switch variant {
         case .primary:
-            return Color.accentColor.opacity(isHovering ? 0.55 : 0.25)
+            return Color.accentColor.opacity(HoverContrast.strokeOpacity(base: isHovering ? 0.55 : 0.25, increasedContrast: increasedContrast))
         case .danger:
-            return Color.red.opacity(isHovering ? 0.35 : 0.16)
+            return Color.red.opacity(HoverContrast.strokeOpacity(base: isHovering ? 0.35 : 0.16, increasedContrast: increasedContrast))
         case .plain, .toolbar:
-            return Color.primary.opacity(isHovering ? 0.16 : 0.08)
+            return Color.primary.opacity(HoverContrast.strokeOpacity(base: isHovering ? 0.16 : 0.08, increasedContrast: increasedContrast))
         }
     }
 }
 
 struct HoverHighlightModifier: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @State private var isHovering = false
+
+    private var increasedContrast: Bool {
+        colorSchemeContrast == .increased
+    }
 
     func body(content: Content) -> some View {
         content
@@ -148,9 +184,12 @@ struct HoverHighlightModifier: ViewModifier {
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.primary.opacity(isHovering ? 0.12 : 0.0), lineWidth: 1)
+                    .strokeBorder(
+                        Color.primary.opacity(HoverContrast.strokeOpacity(base: isHovering ? 0.12 : 0.0, increasedContrast: increasedContrast)),
+                        lineWidth: 1
+                    )
             )
-            .animation(.easeOut(duration: 0.12), value: isHovering)
+            .animation(.easeOut(duration: HoverMotion.animationDuration(base: 0.12, reduceMotion: reduceMotion)), value: isHovering)
             .onHover { hovering in
                 isHovering = hovering
             }

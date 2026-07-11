@@ -104,7 +104,7 @@ struct SettingsView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, 40)
+                .padding(.horizontal, 32)
             updateSection
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -157,14 +157,14 @@ struct SettingsView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .padding(.horizontal, 40)
+                    .padding(.horizontal, 32)
             case .failed(let message):
                 checkUpdateButton
                 Text(message)
                     .font(.callout)
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.center)
-                    .padding(.horizontal, 40)
+                    .padding(.horizontal, 32)
             }
 
             Toggle(L10n.t("update.autoCheck"), isOn: $updater.autoCheckUpdates)
@@ -204,7 +204,7 @@ struct SettingsView: View {
                 .frame(maxHeight: 120)
                 .padding(8)
                 .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
-                .padding(.horizontal, 40)
+                .padding(.horizontal, 32)
             }
             HStack {
                 Button(L10n.t("update.download")) { updater.download(info) }
@@ -290,12 +290,12 @@ struct SettingsView: View {
             HStack(spacing: 10) {
                 Image(systemName: service.systemImage)
                     .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(isCurrent ? .white : .secondary)
+                    .foregroundStyle(isCurrent ? AnyShapeStyle(Color(nsColor: .alternateSelectedControlTextColor)) : AnyShapeStyle(.secondary))
                     .frame(width: 18)
 
                 Text(L10n.t("engine.\(service.id)"))
                     .font(.callout.weight(.medium))
-                    .foregroundStyle(isCurrent ? .white : .primary)
+                    .foregroundStyle(isCurrent ? AnyShapeStyle(Color(nsColor: .alternateSelectedControlTextColor)) : AnyShapeStyle(.primary))
                     .lineLimit(1)
 
                 Spacer(minLength: 8)
@@ -303,21 +303,21 @@ struct SettingsView: View {
                 if let badge = service.enabledBadge(isCurrent: isCurrent) {
                     Text(badge)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(isCurrent ? .white : .secondary)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
+                        .foregroundStyle(isCurrent ? AnyShapeStyle(Color(nsColor: .alternateSelectedControlTextColor)) : AnyShapeStyle(.secondary))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 4)
                         .background(
                             Capsule()
-                                .fill(isCurrent ? Color.white.opacity(0.18) : Color.secondary.opacity(0.12))
+                                .fill(isCurrent ? Color(nsColor: .alternateSelectedControlTextColor).opacity(0.18) : Color.secondary.opacity(0.12))
                         )
                 }
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 7)
+            .padding(.vertical, 6)
             .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(isCurrent ? Color.accentColor : Color.clear)
+                    .fill(isCurrent ? Color(nsColor: .selectedContentBackgroundColor) : Color.clear)
             )
         }
         .buttonStyle(.plain)
@@ -342,7 +342,7 @@ struct SettingsView: View {
     private func serviceEmptyState(_ service: TranslationEngineDescriptor) -> some View {
         VStack(spacing: 12) {
             Image(systemName: service.systemImage)
-                .font(.system(size: 32, weight: .medium))
+                .font(.system(size: 30, weight: .medium))
                 .foregroundStyle(.secondary)
             Text(String(format: L10n.t("settings.service.noConfiguration"), L10n.t("engine.\(service.id)")))
                 .font(.callout.weight(.semibold))

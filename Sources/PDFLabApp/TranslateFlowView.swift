@@ -138,7 +138,7 @@ struct TranslateFlowView: View {
     private var idleView: some View {
         VStack(spacing: 16) {
             Image(systemName: "doc.text.magnifyingglass")
-                .font(.system(size: 42, weight: .regular))
+                .font(.system(size: 30, weight: .regular))
                 .foregroundStyle(.secondary)
             Text(L10n.t("translate.idle.title"))
                 .font(.title3.weight(.semibold))
@@ -828,7 +828,7 @@ private struct UnsupportedLanguageDialog: View {
                 .buttonStyle(HoverButtonStyle())
             }
         }
-        .padding(22)
+        .padding(20)
         .frame(width: 420)
     }
 }
