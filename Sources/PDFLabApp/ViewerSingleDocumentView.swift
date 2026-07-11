@@ -6,13 +6,17 @@ import PDFLabCore
 struct SingleDocumentView: View {
     var document: ViewerDocument
     var readingLayout: ViewerReadingLayout
+    var zoomScale: Binding<Double>
+    var zoomRequest: ViewerZoomRequest
 
     var body: some View {
         switch document.kind {
         case .pdf:
             SinglePDFView(
                 document: document,
-                readingLayout: readingLayout
+                readingLayout: readingLayout,
+                zoomScale: zoomScale,
+                zoomRequest: zoomRequest
             )
         case .text:
             SingleTextView(document: document)
@@ -27,6 +31,8 @@ struct SingleDocumentView: View {
 private struct SinglePDFView: NSViewRepresentable {
     var document: ViewerDocument
     var readingLayout: ViewerReadingLayout
+    var zoomScale: Binding<Double>
+    var zoomRequest: ViewerZoomRequest
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -43,7 +49,8 @@ private struct SinglePDFView: NSViewRepresentable {
     }
 
     private func configure(_ pdfView: PDFView, context: Context) {
-        if context.coordinator.documentID != document.id {
+        let documentChanged = context.coordinator.documentID != document.id
+        if documentChanged {
             context.coordinator.documentID = document.id
 
             pdfView.autoScales = true
@@ -51,10 +58,17 @@ private struct SinglePDFView: NSViewRepresentable {
             pdfView.document = try? PDFTextExtractor.openDocument(at: document.url, password: document.password)
         }
         readingLayout.apply(to: pdfView)
+        context.coordinator.zoom.apply(
+            zoomRequest,
+            to: pdfView,
+            scale: zoomScale,
+            force: documentChanged
+        )
     }
 
     final class Coordinator {
         var documentID: String?
+        let zoom = PDFZoomController()
     }
 }
 

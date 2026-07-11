@@ -2,7 +2,6 @@ import AppKit
 import PDFKit
 
 enum ViewerReadingLayout: String, CaseIterable, Identifiable {
-    case singlePage
     case twoPage
     case continuous
 
@@ -12,8 +11,6 @@ enum ViewerReadingLayout: String, CaseIterable, Identifiable {
 
     var titleKey: String {
         switch self {
-        case .singlePage:
-            return "viewer.layoutSinglePage"
         case .twoPage:
             return "viewer.layoutTwoPage"
         case .continuous:
@@ -23,8 +20,6 @@ enum ViewerReadingLayout: String, CaseIterable, Identifiable {
 
     var iconName: String {
         switch self {
-        case .singlePage:
-            return "doc"
         case .twoPage:
             return "book.pages"
         case .continuous:
@@ -34,10 +29,8 @@ enum ViewerReadingLayout: String, CaseIterable, Identifiable {
 
     var pdfDisplayMode: PDFDisplayMode {
         switch self {
-        case .singlePage:
-            return .singlePage
         case .twoPage:
-            return .twoUp
+            return .twoUpContinuous
         case .continuous:
             return .singlePageContinuous
         }
