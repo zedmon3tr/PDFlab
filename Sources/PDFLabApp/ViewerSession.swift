@@ -25,6 +25,15 @@ struct ViewerPasswordRequest {
     var side: ViewerSide
 }
 
+/// 每侧独立的会话内缩放记忆(不写 AppStorage,不跨进程持久化)。
+/// 默认 = 实际大小 100%(free + scale 1);命令流每侧独立 revision,
+/// SinglePDFView 重建时按 command 重放恢复该侧缩放。
+struct SideZoomState: Equatable {
+    var selection: ViewerZoomSelection = .free
+    var scale: Double = 1.0
+    var command: ViewerZoomCommand?
+}
+
 /// 常驻查看会话(浏览器 tab 语义):文档标签与对照布局状态与查看器视图解耦。
 /// 返回首页不销毁——标签继续显示在标题栏,点标签回到查看器时滚动/缩放原样保留;
 /// 关掉全部标签才回到纯首页。
@@ -32,6 +41,7 @@ struct ViewerPasswordRequest {
 final class ViewerSession: ObservableObject {
     @Published private(set) var primary: ViewerDocument?
     @Published private(set) var secondary: ViewerDocument?
+    /// 切标签/切布局绝不重置缩放:single(.primary)↔single(.secondary) 只是展示另一侧已存状态。
     @Published var layout: ViewerLayout = .single(.primary)
     @Published var ratioA = 1.0
     @Published var ratioB = 1.0
@@ -46,32 +56,122 @@ final class ViewerSession: ObservableObject {
     /// 单文档预览模式偏好(双页/滚动)。对照模式不使用该值:DualPaneView 强制 continuous
     /// (分页模式每页可滚高度近零,会悄悄弄坏同步滚动)。
     @Published var readingLayout = ViewerReadingLayout.defaultLayout
-    /// 当前 PDFView 实际缩放的回显值(仅驱动百分比显示,不反向施加)。
-    @Published private(set) var zoomScale = 1.0
-    /// 最近一次缩放按钮命令;SinglePDFView 按 revision 幂等施加。
-    @Published private(set) var zoomCommand: ViewerZoomCommand?
+    /// 每侧独立缩放记忆:文档挂后台(切标签/回首页)仍保留自己的缩放,
+    /// 只有装入/替换该侧文档才重置为默认实际大小 100%。
+    @Published private(set) var primaryZoom = SideZoomState()
+    @Published private(set) var secondaryZoom = SideZoomState()
+
+    /// 当前单看侧(sideBySide 时 nil):控制条读写与 PDFView 回显路由的唯一依据。
+    var currentSingleSide: ViewerSide? {
+        switch effectiveLayout {
+        case .single(let side):
+            return side
+        case .sideBySide:
+            return nil
+        }
+    }
+
+    /// 当前单看侧的回显倍率(仅驱动百分比显示;sideBySide 无单看侧时给安全默认)。
+    var zoomScale: Double {
+        currentSingleSide.map { zoomState(for: $0).scale } ?? 1.0
+    }
+
+    var zoomSelection: ViewerZoomSelection {
+        currentSingleSide.map { zoomState(for: $0).selection } ?? .free
+    }
+
+    /// 当前单看侧的缩放命令;SinglePDFView 按 revision 幂等施加,重建时重放恢复该侧缩放。
+    var zoomCommand: ViewerZoomCommand? {
+        currentSingleSide.flatMap { zoomState(for: $0).command }
+    }
 
     func zoomIn() {
-        issueZoomCommand(ViewerZoom.steppedUp(from: zoomScale))
+        guard let side = currentSingleSide else { return }
+        issueZoomCommand(.scale(ViewerZoom.steppedUp(from: zoomState(for: side).scale)), selection: .free, on: side)
     }
 
     func zoomOut() {
-        issueZoomCommand(ViewerZoom.steppedDown(from: zoomScale))
+        guard let side = currentSingleSide else { return }
+        issueZoomCommand(.scale(ViewerZoom.steppedDown(from: zoomState(for: side).scale)), selection: .free, on: side)
+    }
+
+    func selectZoomPreset(_ scale: Double) {
+        guard let side = currentSingleSide else { return }
+        issueZoomCommand(.scale(ViewerZoom.clampedScale(scale)), selection: .free, on: side)
+    }
+
+    func selectActualSize() { selectZoomPreset(1) }
+
+    func selectFitPage() {
+        guard let side = currentSingleSide else { return }
+        issueZoomCommand(.fitPage, selection: .fitPage, on: side)
+    }
+
+    func selectFitWidth() {
+        guard let side = currentSingleSide else { return }
+        issueZoomCommand(.fitWidth, selection: .fitWidth, on: side)
+    }
+
+    func selectFitHeight() {
+        guard let side = currentSingleSide else { return }
+        issueZoomCommand(.fitHeight, selection: .fitHeight, on: side)
+    }
+
+    func noteUserZoomGesture() {
+        guard let side = currentSingleSide else { return }
+        modifyZoomState(on: side) { $0.selection = .free }
     }
 
     /// PDFView 侧回显(捏合/按钮/自动适配任何来源):只更新显示值,
-    /// 绝不派生新缩放命令——防回环的最后一道约定。
+    /// 绝不派生新缩放命令(revision 不前进)——防回环的最后一道约定。
+    /// free 选择下把命令动作原位同步为回显倍率:活跃视图因 revision 相同不会重放,
+    /// 但该侧 PDFView 拆掉重建(切标签回来)时能重放出捏合/步进后的真实缩放。
     func noteObservedZoomScale(_ scale: Double) {
+        guard let side = currentSingleSide else { return }
         let clamped = ViewerZoom.clampedScale(scale)
-        guard abs(clamped - zoomScale) > 0.0001 else { return }
-        zoomScale = clamped
+        guard abs(clamped - zoomState(for: side).scale) > 0.0001 else { return }
+        modifyZoomState(on: side) { state in
+            state.scale = clamped
+            if state.selection == .free, state.command != nil {
+                state.command?.action = .scale(clamped)
+            }
+        }
     }
 
-    private func issueZoomCommand(_ scale: Double) {
-        zoomCommand = ViewerZoomCommand(
-            scale: scale,
-            revision: (zoomCommand?.revision ?? 0) + 1
-        )
+    private func zoomState(for side: ViewerSide) -> SideZoomState {
+        side == .primary ? primaryZoom : secondaryZoom
+    }
+
+    private func modifyZoomState(on side: ViewerSide, _ body: (inout SideZoomState) -> Void) {
+        switch side {
+        case .primary:
+            body(&primaryZoom)
+        case .secondary:
+            body(&secondaryZoom)
+        }
+    }
+
+    private func issueZoomCommand(_ action: ViewerZoomAction, selection: ViewerZoomSelection, on side: ViewerSide) {
+        modifyZoomState(on: side) { state in
+            state.selection = selection
+            state.command = ViewerZoomCommand(
+                action: action,
+                revision: (state.command?.revision ?? 0) + 1
+            )
+        }
+    }
+
+    /// 装入/替换该侧文档:回默认实际大小 100%(发真实 .scale(1) 命令驱动 PDFView),
+    /// 只重置被换的一侧,另一侧与切标签路径都不受影响。
+    private func resetZoom(on side: ViewerSide) {
+        modifyZoomState(on: side) { state in
+            state.selection = .free
+            state.scale = 1.0
+            state.command = ViewerZoomCommand(
+                action: .scale(1),
+                revision: (state.command?.revision ?? 0) + 1
+            )
+        }
     }
 
     /// 查看模块打开主文件成功时回调(MainView 挂历史记录;晋升/译文侧不回调)。
@@ -110,8 +210,11 @@ final class ViewerSession: ObservableObject {
         }
     }
 
-    /// 标签是否处于激活态:sideBySide 下两侧都算激活;single 下仅被聚焦的一侧激活。
+    /// 标签是否处于激活态:查看器前置时,sideBySide 下两侧都算激活、single 下仅聚焦侧激活;
+    /// 回到首页后全部失焦(挂后台)——logo 只是"回主页"动作按钮,不承载长亮状态,
+    /// 标签高亮只表达"查看器当前聚焦谁"。
     func isTabActive(_ side: ViewerSide) -> Bool {
+        guard isViewerVisible else { return false }
         switch effectiveLayout {
         case .sideBySide:
             return true
@@ -139,16 +242,23 @@ final class ViewerSession: ObservableObject {
         switch side {
         case .secondary:
             secondary = nil
+            secondaryZoom = SideZoomState()
             layout = .single(.primary)
             resetRatios()
         case .primary:
             if let promoted = secondary {
                 primary = promoted
                 secondary = nil
+                // 晋升者带着自己的缩放记忆上位(不重置、不补发命令);
+                // 腾出的 secondary 档位回干净默认。文档更换后的命令重放由
+                // SinglePDFView 的 noteDocumentChanged(revision 归 nil)保证。
+                primaryZoom = secondaryZoom
+                secondaryZoom = SideZoomState()
                 layout = .single(.primary)
                 resetRatios()
             } else {
                 primary = nil
+                primaryZoom = SideZoomState()
                 layout = .single(.primary)
                 isViewerVisible = false
             }
@@ -259,6 +369,8 @@ final class ViewerSession: ObservableObject {
             secondary = document
             layout = .single(.secondary)
         }
+        // 每次成功装入/替换文档只重置该侧缩放为默认实际大小 100%。
+        resetZoom(on: side)
         // 任何成功装入的文档都把查看器前置(含密码解锁后)。
         isViewerVisible = true
     }

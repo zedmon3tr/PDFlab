@@ -69,6 +69,9 @@ struct ViewerView: View {
             zoomCommand: session.zoomCommand,
             onScaleChange: { [weak session] scale in
                 session?.noteObservedZoomScale(scale)
+            },
+            onUserZoom: { [weak session] in
+                session?.noteUserZoomGesture()
             }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -109,28 +112,36 @@ struct ViewerView: View {
         .padding(.vertical, 4)
     }
 
-    /// [-] [100%] [+]:按钮 32×32、百分比静态文本框 56×32、间距 2。
+    /// [-] [100%⌄] [+]:缩放值整块为原生菜单按钮。
     private var zoomControl: some View {
         HStack(spacing: ViewerControlBarMetrics.itemSpacing) {
             controlBarIconButton("minus", labelKey: "viewer.zoomOut") {
                 session.zoomOut()
             }
-            Text(ViewerZoom.percentLabel(for: session.zoomScale))
-                .font(.callout)
-                .monospacedDigit()
+            ViewerZoomPopUpButton(
+                percent: ViewerZoom.percentLabel(for: session.zoomScale),
+                checkedItem: ViewerZoom.checkedMenuItem(selection: session.zoomSelection, scale: session.zoomScale),
+                accessibilityLabel: L10n.t("viewer.zoom"),
+                onSelect: handleZoomMenuAction
+            )
                 .frame(
-                    width: ViewerControlBarMetrics.percentWidth,
+                    width: ViewerControlBarMetrics.zoomMenuWidth,
                     height: ViewerControlBarMetrics.buttonSize
                 )
-                .background(
-                    .quaternary.opacity(0.5),
-                    in: RoundedRectangle(cornerRadius: ViewerControlBarMetrics.cornerRadius)
-                )
-                .accessibilityLabel(L10n.t("viewer.zoom"))
                 .help(L10n.t("viewer.zoom"))
             controlBarIconButton("plus", labelKey: "viewer.zoomIn") {
                 session.zoomIn()
             }
+        }
+    }
+
+    private func handleZoomMenuAction(_ action: ViewerZoomMenuAction) {
+        switch action {
+        case .preset(let scale): session.selectZoomPreset(scale)
+        case .actualSize: session.selectActualSize()
+        case .fitPage: session.selectFitPage()
+        case .fitWidth: session.selectFitWidth()
+        case .fitHeight: session.selectFitHeight()
         }
     }
 
@@ -164,12 +175,128 @@ struct ViewerView: View {
     }
 }
 
+enum ViewerZoomMenuAction: Equatable {
+    case preset(Double)
+    case actualSize
+    case fitPage
+    case fitWidth
+    case fitHeight
+}
+
+/// AppKit 仅负责稳定的原生箭头/菜单呈现与 target-action；业务状态仍由 ViewerSession 持有。
+struct ViewerZoomPopUpButton: NSViewRepresentable {
+    var percent: String
+    var checkedItem: ViewerZoomMenuItem?
+    var accessibilityLabel: String
+    var onSelect: (ViewerZoomMenuAction) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onSelect: onSelect) }
+
+    func makeNSView(context: Context) -> NSPopUpButton {
+        let button = Self.makeButton()
+        update(button, coordinator: context.coordinator)
+        return button
+    }
+
+    func updateNSView(_ button: NSPopUpButton, context: Context) {
+        context.coordinator.onSelect = onSelect
+        update(button, coordinator: context.coordinator)
+    }
+
+    static func makeButton() -> NSPopUpButton {
+        let button = NSPopUpButton(
+            frame: NSRect(
+                x: 0,
+                y: 0,
+                width: ViewerControlBarMetrics.zoomMenuWidth,
+                height: ViewerControlBarMetrics.buttonSize
+            ),
+            pullsDown: true
+        )
+        button.controlSize = .regular
+        button.bezelStyle = .rounded
+        button.font = .systemFont(ofSize: NSFont.systemFontSize)
+        if let cell = button.cell as? NSPopUpButtonCell {
+            cell.altersStateOfSelectedItem = false
+            cell.arrowPosition = .arrowAtCenter
+        }
+        return button
+    }
+
+    func update(_ button: NSPopUpButton, coordinator: Coordinator) {
+        let menu = NSMenu()
+        // pullsDown 的第 0 项只负责按钮标题；加入不可见 word joiner，避免它与 100% 动作项
+        // 同名时 NSPopUpButton 把动作项也当作当前展示项并清掉其 checkmark。
+        menu.addItem(NSMenuItem(title: percent + "\u{2060}", action: nil, keyEquivalent: ""))
+
+        for (index, preset) in ViewerZoom.presets.enumerated() {
+            let item = coordinator.item(
+                title: ViewerZoom.percentLabel(for: preset),
+                action: .preset(preset),
+                tag: 100 + index
+            )
+            item.state = checkedItem == .preset(preset) ? .on : .off
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        menu.addItem(coordinator.item(title: L10n.t("viewer.zoomActualSize"), action: .actualSize, tag: 200))
+        menu.addItem(coordinator.fitItem(title: L10n.t("viewer.zoomFitPage"), action: .fitPage, tag: 201, checked: checkedItem == .fitPage))
+        menu.addItem(coordinator.fitItem(title: L10n.t("viewer.zoomFitWidth"), action: .fitWidth, tag: 202, checked: checkedItem == .fitWidth))
+        menu.addItem(coordinator.fitItem(title: L10n.t("viewer.zoomFitHeight"), action: .fitHeight, tag: 203, checked: checkedItem == .fitHeight))
+
+        button.menu = menu
+        button.selectItem(at: 0)
+        // NSPopUpButton 安装菜单/选择展示项时会重写 state；最后再同步业务勾选。
+        for item in menu.items {
+            switch item.tag {
+            case 100 ..< 100 + ViewerZoom.presets.count:
+                let preset = ViewerZoom.presets[item.tag - 100]
+                item.state = checkedItem == .preset(preset) ? .on : .off
+            case 201: item.state = checkedItem == .fitPage ? .on : .off
+            case 202: item.state = checkedItem == .fitWidth ? .on : .off
+            case 203: item.state = checkedItem == .fitHeight ? .on : .off
+            default: item.state = .off
+            }
+        }
+        button.setAccessibilityLabel(accessibilityLabel)
+        button.setAccessibilityValue(percent)
+    }
+
+    final class Coordinator: NSObject {
+        var onSelect: (ViewerZoomMenuAction) -> Void
+        private var actions: [Int: ViewerZoomMenuAction] = [:]
+
+        init(onSelect: @escaping (ViewerZoomMenuAction) -> Void) {
+            self.onSelect = onSelect
+        }
+
+        func item(title: String, action: ViewerZoomMenuAction, tag: Int) -> NSMenuItem {
+            actions[tag] = action
+            let item = NSMenuItem(title: title, action: #selector(selectMenuItem(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = tag
+            return item
+        }
+
+        func fitItem(title: String, action: ViewerZoomMenuAction, tag: Int, checked: Bool) -> NSMenuItem {
+            let item = item(title: title, action: action, tag: tag)
+            item.state = checked ? .on : .off
+            return item
+        }
+
+        @objc func selectMenuItem(_ sender: NSMenuItem) {
+            guard let action = actions[sender.tag] else { return }
+            onSelect(action)
+        }
+    }
+}
+
 /// 控制条度量(Figma "viewing pdf" 帧)。
 enum ViewerControlBarMetrics {
     /// 加/减按钮边长(命中区,≥ DESIGN.md 图标按钮 24×24 下限)。
     static let buttonSize: CGFloat = 32
     /// 百分比静态文本框宽度。
-    static let percentWidth: CGFloat = 56
+    static let zoomMenuWidth: CGFloat = 76
     /// 缩放组内元素间距。
     static let itemSpacing: CGFloat = 2
     /// 缩放组与预览模式切换组件的间距。

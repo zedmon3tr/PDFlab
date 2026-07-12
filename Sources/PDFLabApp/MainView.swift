@@ -16,7 +16,6 @@ struct MainView: View {
     }
 
     @EnvironmentObject private var app: AppState
-    @Environment(\.colorScheme) private var colorScheme
 
     @StateObject private var session = ViewerSession()
     @State private var historyState = MainHistoryState()
@@ -178,7 +177,7 @@ struct MainView: View {
         ToolbarItemGroup(placement: .navigation) {
             logoButton
             if let primary = session.primary {
-                documentTab(
+                DocumentTabView(
                     title: primary.title,
                     isActive: session.isTabActive(.primary),
                     onFocus: { session.focusTab(.primary) },
@@ -186,7 +185,7 @@ struct MainView: View {
                 )
             }
             if let secondary = session.secondary {
-                documentTab(
+                DocumentTabView(
                     title: secondary.title,
                     isActive: session.isTabActive(.secondary),
                     onFocus: { session.focusTab(.secondary) },
@@ -241,7 +240,9 @@ struct MainView: View {
                 .scaledToFit()
                 .frame(width: 20, height: 20)
         }
-        .buttonStyle(.plain)
+        // 复用与 "+"/对照浏览等工具栏按钮相同的 HoverButtonStyle,
+        // 保证 hover/press/focus/disabled/Reduce Motion/增强对比度表现一致。
+        .buttonStyle(HoverButtonStyle(variant: .toolbar))
         .accessibilityLabel(L10n.t("app.name"))
         .help(L10n.t("app.name"))
     }
@@ -279,53 +280,6 @@ struct MainView: View {
         .buttonStyle(HoverButtonStyle(variant: .toolbar))
         .disabled(session.isDefaultRatio)
         .help(L10n.t("viewer.resetRatio"))
-    }
-
-    private func documentTab(
-        title: String,
-        isActive: Bool,
-        onFocus: @escaping () -> Void,
-        onCloseTab: @escaping () -> Void
-    ) -> some View {
-        HStack(spacing: 8) {
-            // 标签主体可点 → 聚焦该侧(首页点击 = 回查看器)。
-            Button(action: onFocus) {
-                Text(title)
-                    .font(.callout)
-                    .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: ViewerTabMetrics.maxTitleWidth, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(title)
-            // × 关闭按钮独立,点击不穿透到聚焦;首页也可关。
-            Button(action: onCloseTab) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
-            }
-            .buttonStyle(TabCloseButtonStyle())
-            .help(L10n.t("viewer.closeTab"))
-        }
-        .padding(.horizontal, ViewerTabMetrics.horizontalPadding)
-        // 参考图(Chrome/PDF Expert 式):标签占满标题栏可用高度,仅激活标签有底色。
-        .frame(height: ViewerTabMetrics.height)
-        .background(activeTabFill(isActive: isActive), in: RoundedRectangle(cornerRadius: 6))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(Color.primary.opacity(isActive ? 0.12 : 0), lineWidth: 1)
-        )
-    }
-
-    /// 激活标签底色:亮色模式用内容底(textBackgroundColor,浅于标题栏),
-    /// 暗色模式 textBackgroundColor 近黑、反而更暗,改用系统 quaternary fill 亮一档;
-    /// 非激活标签无底色。全部走系统语义色,不写死色值。
-    private func activeTabFill(isActive: Bool) -> AnyShapeStyle {
-        guard isActive else { return AnyShapeStyle(Color.clear) }
-        return colorScheme == .dark
-            ? AnyShapeStyle(.quaternary)
-            : AnyShapeStyle(Color(nsColor: .textBackgroundColor))
     }
 
     private var passwordAlertPresented: Binding<Bool> {
@@ -568,7 +522,99 @@ struct MainView: View {
     }
 }
 
+/// 标题栏文档标签 hover 数值:非激活标签 hover 从无底色到轻 tonal 底;
+/// 激活标签保留原有底色,hover 只轻微加深已有描边(幅度克制,不抢激活态本身的视觉权重)。
+/// internal(非 private):供 ViewerInteractionTests 经 @testable import 覆盖设计范围断言。
+enum DocumentTabHoverMetrics {
+    static let inactiveHoverFillOpacity: Double = 0.07
+    static let activeStrokeOpacity: Double = 0.12
+    static let activeHoverStrokeOpacity: Double = 0.20
+    static let animationBaseDuration: Double = 0.14
+}
+
+/// 文档标签(Chrome/PDF Expert 式):标题按钮 + 独立 × 关闭按钮。
+/// hover 反馈覆盖整个标签矩形、不改变尺寸(只变 fill/描边);
+/// × 自身的 hover 反馈由 TabCloseButtonStyle 独立负责,两者可同时可见(参考 Chrome 行为)。
+private struct DocumentTabView: View {
+    let title: String
+    let isActive: Bool
+    let onFocus: () -> Void
+    let onCloseTab: () -> Void
+
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
+    @State private var isHovering = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // 标签主体可点 → 聚焦该侧(首页点击 = 回查看器)。
+            Button(action: onFocus) {
+                Text(title)
+                    .font(.callout)
+                    .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: ViewerTabMetrics.maxTitleWidth, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(title)
+            .clickableHoverCursor()
+            // × 关闭按钮独立,点击不穿透到聚焦;首页也可关。
+            Button(action: onCloseTab) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .bold))
+            }
+            .buttonStyle(TabCloseButtonStyle())
+            .help(L10n.t("viewer.closeTab"))
+        }
+        .padding(.horizontal, ViewerTabMetrics.horizontalPadding)
+        // 参考图(Chrome/PDF Expert 式):标签占满标题栏可用高度,仅激活标签有底色。
+        .frame(height: ViewerTabMetrics.height)
+        .background(fill, in: RoundedRectangle(cornerRadius: 6))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(stroke, lineWidth: 1)
+        )
+        .animation(
+            .easeOut(duration: HoverMotion.animationDuration(base: DocumentTabHoverMetrics.animationBaseDuration, reduceMotion: reduceMotion)),
+            value: isHovering
+        )
+        .onHover { hovering in
+            isHovering = hovering
+        }
+        .onDisappear { isHovering = false }
+    }
+
+    /// 激活标签底色:亮色模式用内容底(textBackgroundColor,浅于标题栏),
+    /// 暗色模式 textBackgroundColor 近黑、反而更暗,改用系统 quaternary fill 亮一档;
+    /// 非激活标签无底色,hover 时给轻 tonal fill 提示可点。全部走系统语义色,不写死色值。
+    private var fill: AnyShapeStyle {
+        guard isActive else {
+            return AnyShapeStyle(Color.primary.opacity(isHovering ? DocumentTabHoverMetrics.inactiveHoverFillOpacity : 0))
+        }
+        return colorScheme == .dark
+            ? AnyShapeStyle(.quaternary)
+            : AnyShapeStyle(Color(nsColor: .textBackgroundColor))
+    }
+
+    /// 非激活标签不加描边(只用 fill 表达 hover);激活标签描边 hover 时轻微加深。
+    private var stroke: Color {
+        let base = isActive
+            ? (isHovering ? DocumentTabHoverMetrics.activeHoverStrokeOpacity : DocumentTabHoverMetrics.activeStrokeOpacity)
+            : 0
+        return Color.primary.opacity(HoverContrast.strokeOpacity(base: base, increasedContrast: colorSchemeContrast == .increased))
+    }
+}
+
 /// 标签页 × 关闭按钮:小圆形命中区,hover 显示浅底 + pointingHand。
+///
+/// hover 视觉**即时呈现、不做渐变动画**(与 Safari/Chrome 原生标签 × 一致):
+/// 曾两次尝试用 `.animation(value: isHovering)` 做 120ms 渐入,首次 hover 都会
+/// 肉眼可见地闪一下(疑与首次 hover 时 tracking/手势初始化引发的状态抖动被动画
+/// 放大有关,拆分动画作用域也没根治);即时切换下任何单帧抖动都不可感知。
+/// 按下反馈保留独立动画作用域。
 private struct TabCloseButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         TabCloseButtonBody(configuration: configuration)
@@ -576,6 +622,7 @@ private struct TabCloseButtonStyle: ButtonStyle {
 
     private struct TabCloseButtonBody: View {
         let configuration: ButtonStyle.Configuration
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
         @State private var isHovering = false
 
         var body: some View {
@@ -586,9 +633,13 @@ private struct TabCloseButtonStyle: ButtonStyle {
                     Circle().fill(Color.primary.opacity(isHovering ? 0.12 : 0.0))
                 )
                 .opacity(configuration.isPressed ? 0.7 : 1)
-                .animation(.easeOut(duration: 0.1), value: isHovering)
+                .animation(.easeOut(duration: HoverMotion.animationDuration(base: 0.08, reduceMotion: reduceMotion)), value: configuration.isPressed)
                 .onHover { hovering in
-                    isHovering = hovering
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        isHovering = hovering
+                    }
                 }
                 .onDisappear { isHovering = false }
                 .clickableHoverCursor()
