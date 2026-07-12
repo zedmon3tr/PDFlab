@@ -43,7 +43,8 @@ enum L10n {
         }
     }
 
-    private static let strings: [String: (zh: String, en: String)] = [
+    private static let strings: [String: (zh: String, en: String)] = {
+        var values: [String: (zh: String, en: String)] = [
         // 主界面
         "app.name": ("PDFlab", "PDFlab"),
         "main.view": ("查看", "View"),
@@ -243,5 +244,12 @@ enum L10n {
         "error.exportWriteFailed": ("导出写入失败", "Failed to write the exported file"),
         "error.cancelled": ("已取消", "Cancelled"),
         "error.updateUnavailable": ("更新服务暂不可用,请稍后重试", "Update service is unavailable. Please try again later."),
-    ]
+        ]
+#if DEBUG
+        values["diagnostics.menu"] = ("开发诊断", "Developer Diagnostics")
+        values["diagnostics.open"] = ("打开翻译日志文件夹", "Open Translation Log Folder")
+        values["diagnostics.clear"] = ("清理翻译日志", "Clear Translation Log")
+#endif
+        return values
+    }()
 }

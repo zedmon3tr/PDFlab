@@ -1,5 +1,8 @@
 import SwiftUI
 import PDFLabCore
+#if DEBUG
+import AppKit
+#endif
 
 @main
 struct PDFLabApp: App {
@@ -31,6 +34,19 @@ struct PDFLabApp: App {
                 }
                 .keyboardShortcut(",", modifiers: .command)
             }
+#if DEBUG
+            CommandMenu(L10n.t("diagnostics.menu")) {
+                Button(L10n.t("diagnostics.open")) {
+                    Task {
+                        if let directory = await TranslationDiagnostics.prepareDirectory() {
+                            NSWorkspace.shared.open(directory)
+                        }
+                    }
+                }
+                .disabled(TranslationDiagnostics.logURL == nil)
+                Button(L10n.t("diagnostics.clear")) { Task { await TranslationDiagnostics.clear() } }
+            }
+#endif
         }
     }
 

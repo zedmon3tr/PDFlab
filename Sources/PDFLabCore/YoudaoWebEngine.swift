@@ -44,14 +44,14 @@ public struct YoudaoWebEngine: TranslationEngine {
     }
 
     public func translate(_ texts: [String], direction: TranslationDirection) async throws -> [String] {
-        await limiter.waitTurn()
+        try await limiter.waitTurn()
         let session = try await fetchSessionKey()
 
         var results: [String] = []
         for text in texts {
             var translated = ""
             for chunk in TextChunker.split(text, limit: perRequestCharLimit) {
-                await limiter.waitTurn()
+                try await limiter.waitTurn()
                 translated += try await translateChunk(chunk, direction: direction, session: session)
             }
             results.append(translated)
@@ -118,6 +118,8 @@ public struct YoudaoWebEngine: TranslationEngine {
     private func perform(_ request: URLRequest) async throws -> Data {
         let (data, resp): (Data, URLResponse)
         do { (data, resp) = try await client.data(for: request) }
+        catch is CancellationError { throw CancellationError() }
+        catch let error as URLError where error.code == .cancelled { throw CancellationError() }
         catch { throw PDFLabError.networkError(error.localizedDescription) }
         guard let http = resp as? HTTPURLResponse else { throw PDFLabError.engineUnavailable(engineID: id) }
         if http.statusCode == 429 { throw PDFLabError.engineRateLimited }

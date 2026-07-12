@@ -51,11 +51,23 @@ public final class TranslationPipeline: @unchecked Sendable {
 
     private let engine: TranslationEngine
     private let makeOCR: (OCRLanguage) -> OCRService
+#if DEBUG
+    private let diagnostics: any TranslationDiagnosticSink
+#endif
 
+#if DEBUG
+    public init(engine: TranslationEngine, ocr: @escaping (OCRLanguage) -> OCRService = OCRService.init(language:),
+                diagnostics: any TranslationDiagnosticSink = TranslationDiagnostics.shared) {
+        self.engine = engine
+        self.makeOCR = ocr
+        self.diagnostics = diagnostics
+    }
+#else
     public init(engine: TranslationEngine, ocr: @escaping (OCRLanguage) -> OCRService = OCRService.init(language:)) {
         self.engine = engine
         self.makeOCR = ocr
     }
+#endif
 
     /// 开始前独立调用,UI 据此弹软上限警告。
     public static func softLimitCheck(url: URL, password: String?) throws -> SoftLimitCheck {
@@ -243,14 +255,42 @@ public final class TranslationPipeline: @unchecked Sendable {
         // 阶段 5:分批翻译(每批 10 段)。extractionOnly 跳过。
         var translations: [String] = []
         if input.options.content != .extractionOnly {
+#if DEBUG
+            let runID = UUID()
+#endif
             var index = 0
             while index < paragraphs.count {
                 try Task.checkCancellation()
                 let batch = Array(paragraphs[index..<min(index + Self.translationBatchSize, paragraphs.count)])
-                translations += try await engine.translate(batch.map(\.text), direction: direction)
+                let texts = batch.map(\.text)
+                let batchNumber = index / Self.translationBatchSize + 1
+                let pageStart = (batch.first?.pageIndex ?? 0) + 1
+                let pageEnd = (batch.last?.pageIndex ?? 0) + 1
+#if DEBUG
+                let started = Date()
+                let context = TranslationDiagnosticContext(runID: runID, batch: batchNumber, pageStart: pageStart, pageEnd: pageEnd)
+                do {
+                    translations += try await TranslationDiagnosticScope.$current.withValue(context) {
+                        try await engine.translate(texts, direction: direction)
+                    }
+                    await diagnostics.record(.init(runID: runID, engine: engine.id, stage: "batch-complete",
+                        direction: direction, batch: batchNumber, pageStart: pageStart, pageEnd: pageEnd,
+                        characterCount: texts.reduce(0) { $0 + $1.count },
+                        durationMilliseconds: Int(Date().timeIntervalSince(started) * 1000)))
+                } catch {
+                    await diagnostics.record(.init(runID: runID, engine: engine.id, stage: "batch-failed",
+                        direction: direction, batch: batchNumber, pageStart: pageStart, pageEnd: pageEnd,
+                        characterCount: texts.reduce(0) { $0 + $1.count },
+                        durationMilliseconds: Int(Date().timeIntervalSince(started) * 1000),
+                        errorCategory: Self.diagnosticCategory(error)))
+                    throw error
+                }
+#else
+                translations += try await engine.translate(texts, direction: direction)
+#endif
                 progress(PipelineProgress(
                     stage: .translating,
-                    currentPage: (batch.last?.pageIndex ?? 0) + 1,
+                    currentPage: pageEnd,
                     totalPages: totalPages
                 ))
                 index += Self.translationBatchSize
@@ -268,4 +308,18 @@ public final class TranslationPipeline: @unchecked Sendable {
         )
         return (composed, parsed)
     }
+
+#if DEBUG
+    private static func diagnosticCategory(_ error: Error) -> String {
+        if error is CancellationError { return "cancelled" }
+        guard let error = error as? PDFLabError else { return "unexpected" }
+        switch error {
+        case .engineRateLimited: return "rate-limited"
+        case .networkError: return "network"
+        case .cancelled: return "cancelled"
+        case .engineInvalidKey: return "invalid-key"
+        default: return "engine-or-data"
+        }
+    }
+#endif
 }

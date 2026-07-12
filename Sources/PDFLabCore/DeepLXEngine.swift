@@ -11,18 +11,39 @@ public struct DeepLXEngine: TranslationEngine {
     public let id = "deepl", isUnofficial = true, perRequestCharLimit = 3000
     private let client: HTTPClient
     private let limiter: RateLimiter
+    private let retryPolicy: TranslationRetryPolicy
+#if DEBUG
+    private let diagnostics: any TranslationDiagnosticSink
+#endif
 
-    public init(client: HTTPClient = URLSession.shared, limiter: RateLimiter = RateLimiter(minInterval: 2.0)) {
-        self.client = client; self.limiter = limiter
+#if DEBUG
+    public init(client: HTTPClient = URLSession.shared, limiter: RateLimiter = RateLimiter(minInterval: 2.0),
+                retryPolicy: TranslationRetryPolicy = TranslationRetryPolicy(),
+                diagnostics: any TranslationDiagnosticSink = TranslationDiagnostics.shared) {
+        self.client = client; self.limiter = limiter; self.retryPolicy = retryPolicy; self.diagnostics = diagnostics
     }
+#else
+    public init(client: HTTPClient = URLSession.shared, limiter: RateLimiter = RateLimiter(minInterval: 2.0),
+                retryPolicy: TranslationRetryPolicy = TranslationRetryPolicy()) {
+        self.client = client; self.limiter = limiter; self.retryPolicy = retryPolicy
+    }
+#endif
 
     public func translate(_ texts: [String], direction: TranslationDirection) async throws -> [String] {
+#if DEBUG
+        let context = TranslationDiagnosticScope.current ?? .init(runID: UUID())
+#endif
         var results: [String] = []
         for text in texts {
             var translated = ""
             for chunk in TextChunker.split(text, limit: perRequestCharLimit) {
-                await limiter.waitTurn()
+#if DEBUG
+                translated += try await TranslationDiagnosticScope.$current.withValue(context) {
+                    try await translateChunk(chunk, direction: direction)
+                }
+#else
                 translated += try await translateChunk(chunk, direction: direction)
+#endif
             }
             results.append(translated)
         }
@@ -30,29 +51,122 @@ public struct DeepLXEngine: TranslationEngine {
     }
 
     private func translateChunk(_ text: String, direction: TranslationDirection) async throws -> String {
+#if DEBUG
+        let context = TranslationDiagnosticScope.current!
+#endif
         let targetLang = direction == .enToZh ? "ZH" : "EN"
         let body = Self.buildRequestBody(text: text, sourceLang: "auto", targetLang: targetLang)
 
         var request = URLRequest(url: URL(string: "https://www2.deepl.com/jsonrpc")!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/124 Safari/537.36", forHTTPHeaderField: "User-Agent")
         request.httpBody = body.data(using: .utf8)
+        for attempt in 0...retryPolicy.maxRetries {
+#if DEBUG
+            let requestID = UUID(), started = Date()
+            var outcomeRecorded = false
+#endif
+            do {
+                try await limiter.waitTurn()
+                let (data, response) = try await client.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+#if DEBUG
+                    outcomeRecorded = true
+                    await record(context, requestID, direction, text.count, started, nil, attempt, "invalid-response")
+#endif
+                    throw PDFLabError.engineUnavailable(engineID: id)
+                }
+                if http.statusCode == 429 || (500...599).contains(http.statusCode) {
+                    let canRetry = attempt < retryPolicy.maxRetries
+#if DEBUG
+                    outcomeRecorded = true
+                    await record(context, requestID, direction, text.count, started, http.statusCode, attempt,
+                                 canRetry ? "recoverable-http" : (http.statusCode == 429 ? "rate-limited" : "recoverable-http-exhausted"))
+#endif
+                    if canRetry { try await retryPolicy.wait(beforeRetry: attempt); continue }
+                    throw http.statusCode == 429 ? PDFLabError.engineRateLimited : PDFLabError.engineUnavailable(engineID: id)
+                }
+                guard (200..<300).contains(http.statusCode) else {
+#if DEBUG
+                    outcomeRecorded = true
+                    await record(context, requestID, direction, text.count, started, http.statusCode, attempt, "permanent-http")
+#endif
+                    throw PDFLabError.engineUnavailable(engineID: id)
+                }
+                do {
+                    let translated = try Self.parseResponse(data)
+#if DEBUG
+                    outcomeRecorded = true
+                    await record(context, requestID, direction, text.count, started, http.statusCode, attempt, nil)
+#endif
+                    return translated
+                } catch {
+#if DEBUG
+                    outcomeRecorded = true
+                    await record(context, requestID, direction, text.count, started, http.statusCode, attempt,
+                                 Self.isJSONRPCError(data) ? "jsonrpc" : "parse")
+#endif
+                    throw error
+                }
+            } catch let error as PDFLabError {
+                throw error
+            } catch is CancellationError {
+#if DEBUG
+                if !outcomeRecorded {
+                    await record(context, requestID, direction, text.count, started, nil, attempt, "cancelled")
+                }
+#endif
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled {
+#if DEBUG
+                if !outcomeRecorded {
+                    await record(context, requestID, direction, text.count, started, nil, attempt, "cancelled")
+                }
+#endif
+                throw CancellationError()
+            } catch {
+                let canRetry = attempt < retryPolicy.maxRetries
+#if DEBUG
+                outcomeRecorded = true
+                await record(context, requestID, direction, text.count, started, nil, attempt,
+                             canRetry ? "network" : "network-exhausted")
+#endif
+                if canRetry { try await retryPolicy.wait(beforeRetry: attempt); continue }
+                throw PDFLabError.networkError(error.localizedDescription)
+            }
+        }
+        throw PDFLabError.engineUnavailable(engineID: id)
+    }
 
-        let (data, resp): (Data, URLResponse)
-        do { (data, resp) = try await client.data(for: request) }
-        catch { throw PDFLabError.networkError(error.localizedDescription) }
-        guard let http = resp as? HTTPURLResponse else { throw PDFLabError.engineUnavailable(engineID: id) }
-        if http.statusCode == 429 { throw PDFLabError.engineRateLimited }
-        guard (200..<300).contains(http.statusCode) else { throw PDFLabError.engineUnavailable(engineID: id) }
-
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let result = root["result"] as? [String: Any],
+    static func parseResponse(_ data: Data) throws -> String {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw PDFLabError.engineUnavailable(engineID: "deepl")
+        }
+        // JSON-RPC `error` is a protocol/signature rejection, not a transient transport failure.
+        if root["error"] != nil { throw PDFLabError.engineUnavailable(engineID: "deepl") }
+        guard let result = root["result"] as? [String: Any],
               let texts = result["texts"] as? [[String: Any]],
-              let first = texts.first?["text"] as? String else {
-            throw PDFLabError.engineUnavailable(engineID: id)
+              let first = texts.first?["text"] as? String, !first.isEmpty else {
+            throw PDFLabError.engineUnavailable(engineID: "deepl")
         }
         return first
     }
+
+#if DEBUG
+    private static func isJSONRPCError(_ data: Data) -> Bool {
+        ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["error"] != nil
+    }
+
+    private func record(_ context: TranslationDiagnosticContext, _ requestID: UUID,
+                        _ direction: TranslationDirection, _ count: Int, _ started: Date,
+                        _ status: Int?, _ retry: Int, _ error: String?) async {
+        await diagnostics.record(.init(runID: context.runID, requestID: requestID, engine: id, stage: "http",
+            direction: direction, batch: context.batch, pageStart: context.pageStart, pageEnd: context.pageEnd, characterCount: count,
+            durationMilliseconds: Int(Date().timeIntervalSince(started) * 1000), httpStatus: status,
+            retryCount: retry, errorCategory: error))
+    }
+#endif
 
     /// 手工拼接 JSON-RPC 请求体,复现 DeepLX 的 id/timestamp/method-spacing 规则。
     static func buildRequestBody(text: String, sourceLang: String, targetLang: String) -> String {
@@ -61,7 +175,7 @@ public struct DeepLXEngine: TranslationEngine {
         let escaped = jsonEscape(text)
 
         var body = """
-        {"jsonrpc":"2.0","method":"LMT_handle_texts","id":\(id),"params":{"splitting":"newlines","lang":{"source_lang_user_selected":"\(sourceLang)","target_lang":"\(targetLang)"},"texts":[{"text":"\(escaped)","requestAlternatives":3}],"timestamp":\(timestamp)}}
+        {"jsonrpc":"2.0","method":"LMT_handle_texts","id":\(id),"params":{"splitting":"newlines","lang":{"source_lang_user_selected":"\(sourceLang)","target_lang":"\(targetLang)"},"commonJobParams":{"wasSpoken":false,"transcribe_as":""},"texts":[{"text":"\(escaped)","requestAlternatives":3}],"timestamp":\(timestamp)}}
         """
 
         // DeepLX 经典 method-spacing 技巧:按 id 取模在冒号后加/减一个空格,

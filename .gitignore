@@ -3,6 +3,7 @@
 *.app
 *.dmg
 .superpowers/
+/.pdflab-dev/
 
 # 本地开发与私有流程材料：不随公开仓分发
 /.impeccable/

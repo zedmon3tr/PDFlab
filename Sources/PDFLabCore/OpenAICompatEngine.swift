@@ -29,7 +29,7 @@ public struct OpenAICompatEngine: TranslationEngine {
     public func translate(_ texts: [String], direction: TranslationDirection) async throws -> [String] {
         var results: [String] = []
         for text in texts {
-            await limiter.waitTurn()
+            try await limiter.waitTurn()
             results.append(try await complete(userMessage: text, direction: direction))
         }
         return results
@@ -63,6 +63,8 @@ public struct OpenAICompatEngine: TranslationEngine {
 
         let (data, resp): (Data, URLResponse)
         do { (data, resp) = try await client.data(for: request) }
+        catch is CancellationError { throw CancellationError() }
+        catch let error as URLError where error.code == .cancelled { throw CancellationError() }
         catch { throw PDFLabError.networkError(error.localizedDescription) }
 
         guard let http = resp as? HTTPURLResponse else { throw PDFLabError.engineUnavailable(engineID: id) }
