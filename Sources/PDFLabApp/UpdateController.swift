@@ -19,7 +19,7 @@ final class UpdateController: ObservableObject {
     static let shared = UpdateController()
 
     /// GitHub 仓库坐标。⚠️ 建仓后把 owner 替换为真实用户名。
-    nonisolated static let repoOwner = "REPLACE_ME"
+    nonisolated static let repoOwner = "zedmon3tr"
     nonisolated static let repoName = "PDFlab"
 
     @Published private(set) var phase: Phase = .idle
