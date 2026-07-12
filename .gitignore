@@ -3,3 +3,16 @@
 *.app
 *.dmg
 .superpowers/
+
+# 本地开发与私有流程材料：不随公开仓分发
+/.impeccable/
+/Tests/
+/TEST PDF_Common EV Charging Problems and Issues copy.PDF
+/AGENTS.md
+/CLAUDE.md
+/DESIGN.md
+/PRODUCT.md
+/Product-Spec-CHANGELOG.md
+/acceptance-checklist.md
+/dev-build.md
+/product-spec.md
