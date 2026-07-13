@@ -26,6 +26,8 @@ struct TranslateFlowState: Equatable {
     var outputURL: URL?
     var previewPageIndex = 0
     var previewPageCount = 1
+    /// 本次翻译临时选用的引擎(默认跟随全局设置;仅本次运行生效,不写回设置)。
+    var engineID: String = TranslationEngineDescriptor.defaultID
 
     mutating func acceptFile(_ url: URL, password: String? = nil, pageCount: Int = 1) {
         sourceURL = url
@@ -43,6 +45,7 @@ struct TranslateFlowState: Equatable {
         outputURL = nil
         previewPageIndex = 0
         previewPageCount = max(1, pageCount)
+        engineID = TranslationEngineDescriptor.defaultID
         phase = .optionsReady
     }
 
@@ -220,5 +223,22 @@ enum TranslateProgressFormatter {
             return String(format: L10n.t("translate.remaining.hours"), hours)
         }
         return String(format: L10n.t("translate.remaining.hoursMinutes"), hours, remainingMinutes)
+    }
+}
+
+/// 开始翻译前的凭据预检:需 API Key 的官方引擎在 Keychain 无 Key/空 Key 时拦下,
+/// 提示用户去设置检查;免 Key 引擎与未知 id(工厂回退 Google)不拦。
+enum TranslateEnginePrecheck {
+    static func hasMissingCredential(engineID: String, credential: (String) -> String?) -> Bool {
+        guard let descriptor = TranslationEngineDescriptor.descriptor(for: engineID),
+              descriptor.configuration == .apiKey else { return false }
+        let keychainKey: String
+        switch engineID {
+        case "openai": keychainKey = AppState.keychainOpenAIAPIKey
+        case "claude": keychainKey = AppState.keychainClaudeAPIKey
+        case "deepseek": keychainKey = AppState.keychainDeepSeekAPIKey
+        default: return false
+        }
+        return (credential(keychainKey) ?? "").isEmpty
     }
 }
