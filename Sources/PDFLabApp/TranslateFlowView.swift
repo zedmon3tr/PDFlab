@@ -21,7 +21,6 @@ struct TranslateFlowView: View {
     @State private var directionRequest: TranslateDirectionRequest?
     @State private var alert: TranslateAlert?
     @State private var runTask: Task<Void, Never>?
-    @State private var ocrDetectionTask: Task<Void, Never>?
     @State private var isSaving = false
 
     init(
@@ -176,6 +175,11 @@ struct TranslateFlowView: View {
                     fileHeader
                     settingsPane
 
+                    Text(L10n.t("translate.pageRange.hint"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: TranslateOptionsLayout.settingsWidth, alignment: .leading)
+
                     Text(L10n.t("translate.ocrLanguage.help"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -315,6 +319,17 @@ struct TranslateFlowView: View {
                         Text(L10n.t("translate.pageMode.pageAligned")).tag(PageMode.pageAligned)
                         Text(L10n.t("translate.pageMode.continuous")).tag(PageMode.continuous)
                     }
+                }
+                settingsDivider
+                settingsRow(title: L10n.t("translate.pageRange")) {
+                    TextField(
+                        "",
+                        text: $state.pageRangeText,
+                        prompt: Text(L10n.t("translate.pageRange.placeholder"))
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel(L10n.t("translate.pageRange"))
+                    .accessibilityHint(L10n.t("translate.pageRange.hint"))
                 }
             }
             .background(.quaternary.opacity(0.18), in: RoundedRectangle(cornerRadius: 6))
@@ -469,18 +484,14 @@ struct TranslateFlowView: View {
     }
 
     private var fileHeader: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "doc.richtext")
+        VStack(alignment: .leading, spacing: 2) {
+            Text(state.sourceURL?.lastPathComponent ?? "")
+                .font(.headline)
+            Text(state.sourceURL?.path ?? "")
+                .font(.caption)
                 .foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(state.sourceURL?.lastPathComponent ?? "")
-                    .font(.headline)
-                Text(state.sourceURL?.path ?? "")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
     }
 
@@ -526,11 +537,20 @@ struct TranslateFlowView: View {
     private func acceptFile(_ url: URL, password: String?, pageCount: Int = 1) {
         // 需求 3.1:翻译模块导入的文件不进入历史(历史只记查看模块主文件)。
         state.acceptFile(url, password: password, pageCount: pageCount)
-        detectInitialOCRLanguage(url: url, password: password)
     }
 
     private func startPipeline() {
         guard let sourceURL = state.sourceURL else { return }
+        let pageRange: ClosedRange<Int>?
+        do {
+            pageRange = try TranslationPageRange.parse(state.pageRangeText, totalPages: state.previewPageCount)
+        } catch let error as PDFLabError {
+            alert = TranslateAlert(title: L10n.t("translate.failed"), message: translateErrorMessage(error))
+            return
+        } catch {
+            alert = TranslateAlert(title: L10n.t("translate.failed"), message: error.localizedDescription)
+            return
+        }
         runTask?.cancel()
         state.startRunning()
 
@@ -540,7 +560,8 @@ struct TranslateFlowView: View {
             options: state.options,
             ocrLanguage: state.ocrLanguage,
             targetLanguage: state.targetLanguage,
-            forcedDirection: state.forcedDirection
+            forcedDirection: state.forcedDirection,
+            pageRange: pageRange
         )
         let pipeline = TranslationPipeline(engine: app.makeEngine())
 
@@ -594,37 +615,13 @@ struct TranslateFlowView: View {
     }
 
     private func resetFlow() {
-        ocrDetectionTask?.cancel()
-        ocrDetectionTask = nil
         state.reset()
     }
 
     private func closeFlow() {
-        ocrDetectionTask?.cancel()
         runTask?.cancel()
-        ocrDetectionTask = nil
         runTask = nil
         close()
-    }
-
-    private func detectInitialOCRLanguage(url: URL, password: String?) {
-        ocrDetectionTask?.cancel()
-        ocrDetectionTask = Task {
-            do {
-                let detected = try await TranslationPipeline.detectOCRLanguage(url: url, password: password)
-                await MainActor.run {
-                    guard state.sourceURL == url else { return }
-                    state.applyDetectedOCRLanguage(detected)
-                    ocrDetectionTask = nil
-                }
-            } catch {
-                await MainActor.run {
-                    guard state.sourceURL == url else { return }
-                    state.applyDetectedOCRLanguage(nil)
-                    ocrDetectionTask = nil
-                }
-            }
-        }
     }
 
     private func saveCurrentDocument() {

@@ -17,6 +17,7 @@ struct TranslateFlowState: Equatable {
     var ocrLanguageIsAutoDetected = false
     private var ocrLanguageWasChangedByUser = false
     var targetLanguage: TranslationTargetLanguage = .simplifiedChinese
+    var pageRangeText = ""
     var forcedDirection: TranslationDirection?
     var progress: PipelineProgress?
     var runStartedAt: Date?
@@ -33,6 +34,7 @@ struct TranslateFlowState: Equatable {
         ocrLanguageIsAutoDetected = false
         ocrLanguageWasChangedByUser = false
         targetLanguage = .simplifiedChinese
+        pageRangeText = ""
         forcedDirection = nil
         progress = nil
         runStartedAt = nil

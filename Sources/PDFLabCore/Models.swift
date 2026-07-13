@@ -4,7 +4,7 @@
 // 测试文件一律不要直接 import Foundation,经 @testable import PDFLabCore 传递获得。
 @_exported import Foundation
 
-public enum PDFLabCoreInfo { public static let version = "0.1.1" }
+public enum PDFLabCoreInfo { public static let version = "0.1.2" }
 
 /// 一段源文本。pageIndex 从 0 计,是段落起始页(跨页段落归起始页)。
 public struct SourceParagraph: Equatable, Sendable {
@@ -72,6 +72,25 @@ public enum OutputContent: String, Sendable, CaseIterable { case translationOnly
 public enum OutputFormat: String, Sendable, CaseIterable { case pdf, docx, markdown }
 public enum PageMode: String, Sendable, CaseIterable { case continuous, pageAligned }
 
+/// 用户输入的 1 计页码闭区间。空白输入代表处理整份文档。
+public enum TranslationPageRange {
+    public static func parse(_ value: String, totalPages: Int) throws -> ClosedRange<Int>? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let parts = trimmed.split(separator: "-", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let lower = Int(parts[0].trimmingCharacters(in: .whitespaces)),
+              let upper = Int(parts[1].trimmingCharacters(in: .whitespaces)),
+              lower >= 1,
+              lower <= upper,
+              upper <= totalPages else {
+            throw PDFLabError.invalidPageRange
+        }
+        return lower...upper
+    }
+}
+
 public struct ExportOptions: Equatable, Sendable {
     public var content: OutputContent
     public var format: OutputFormat
@@ -117,6 +136,7 @@ public enum PDFLabError: Error, Equatable, Sendable {
     case notAPDF
     case encryptedPDFWrongPassword
     case noTextRecognized
+    case invalidPageRange
     case unsupportedLanguage(detected: String)
     case languagePackMissing
     case engineInvalidKey

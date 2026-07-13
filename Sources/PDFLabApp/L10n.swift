@@ -23,6 +23,7 @@ enum L10n {
         case .notAPDF: return t("error.notAPDF")
         case .encryptedPDFWrongPassword: return t("error.encryptedPDFWrongPassword")
         case .noTextRecognized: return t("error.noTextRecognized")
+        case .invalidPageRange: return t("error.invalidPageRange")
         case .unsupportedLanguage(let detected): return t("error.unsupportedLanguage") + " (\(detected))"
         case .languagePackMissing: return t("error.languagePackMissing")
         case .engineInvalidKey: return t("error.engineInvalidKey")
@@ -126,6 +127,9 @@ enum L10n {
         "translate.pageMode": ("分页", "Page Mode"),
         "translate.pageMode.pageAligned": ("按页", "Page Aligned"),
         "translate.pageMode.continuous": ("连续", "Continuous"),
+        "translate.pageRange": ("页码范围", "Page Range"),
+        "translate.pageRange.placeholder": ("从第一页到最后一页", "From first page to last page"),
+        "translate.pageRange.hint": ("填写 5-12 表示仅翻译第 5 到第 12 页；留空翻译全部页面。", "Enter 5-12 to translate only pages 5 through 12; leave blank to translate all pages."),
         "translate.start": ("开始翻译", "Start"),
         "translate.running": ("正在准备", "Preparing"),
         "translate.cancelRun": ("取消", "Cancel"),
@@ -167,6 +171,7 @@ enum L10n {
         "common.cancel": ("取消", "Cancel"),
         "common.confirm": ("确认", "Confirm"),
         "common.done": ("完成", "Done"),
+        "error.invalidPageRange": ("请输入有效页码范围，例如 5-12。", "Enter a valid page range, for example 5-12."),
 
         // 设置 - 分区
         "settings.title": ("设置", "Settings"),

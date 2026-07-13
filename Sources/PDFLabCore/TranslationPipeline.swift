@@ -9,13 +9,16 @@ public struct PipelineInput: Sendable {
     public var ocrLanguage: OCRLanguage
     public var targetLanguage: TranslationTargetLanguage
     public var forcedDirection: TranslationDirection?
+    /// 1 计闭区间;nil 表示处理整个 PDF。
+    public var pageRange: ClosedRange<Int>?
     public init(
         url: URL,
         password: String?,
         options: ExportOptions,
         ocrLanguage: OCRLanguage = .automatic,
         targetLanguage: TranslationTargetLanguage = .simplifiedChinese,
-        forcedDirection: TranslationDirection? = nil
+        forcedDirection: TranslationDirection? = nil,
+        pageRange: ClosedRange<Int>? = nil
     ) {
         self.url = url
         self.password = password
@@ -23,6 +26,7 @@ public struct PipelineInput: Sendable {
         self.ocrLanguage = ocrLanguage
         self.targetLanguage = targetLanguage
         self.forcedDirection = forcedDirection
+        self.pageRange = pageRange
     }
 }
 
@@ -108,7 +112,7 @@ public final class TranslationPipeline: @unchecked Sendable {
     ///    若为中文则返回中文优先(该页由主循环用中文优先服务重新识别)。
     private func resolveOCRPriority(
         doc: PDFDocument,
-        totalPages: Int,
+        pageIndices: [Int],
         forcedDirection: TranslationDirection?,
         requestedLanguage: OCRLanguage
     ) async throws -> OCRPriority {
@@ -123,7 +127,7 @@ public final class TranslationPipeline: @unchecked Sendable {
         // 文本层嗅探:只读 page.string(与 extractPage 相同的 >=20 字符扫描页判据),
         // 不做逐行定位,代价可忽略。
         var firstScannedIndex: Int?
-        for pageIndex in 0..<totalPages {
+        for pageIndex in pageIndices {
             try Task.checkCancellation()
             guard let text = doc.page(at: pageIndex)?.string,
                   text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 20 else {
@@ -152,12 +156,16 @@ public final class TranslationPipeline: @unchecked Sendable {
         )
     }
 
-    public static func detectOCRLanguage(url: URL, password: String?) async throws -> OCRLanguage? {
+    public static func detectOCRLanguage(
+        url: URL,
+        password: String?,
+        pageRange: ClosedRange<Int>? = nil
+    ) async throws -> OCRLanguage? {
         let doc = try PDFTextExtractor.openDocument(at: url, password: password)
-        let totalPages = doc.pageCount
+        let pageIndices = try selectedPageIndices(totalPages: doc.pageCount, pageRange: pageRange)
         var firstScannedIndex: Int?
 
-        for pageIndex in 0..<totalPages {
+        for pageIndex in pageIndices {
             try Task.checkCancellation()
             guard let text = doc.page(at: pageIndex)?.string,
                   text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 20 else {
@@ -186,11 +194,13 @@ public final class TranslationPipeline: @unchecked Sendable {
         try Task.checkCancellation()
         let doc = try PDFTextExtractor.openDocument(at: input.url, password: input.password)
         let totalPages = doc.pageCount
+        let pageIndices = try Self.selectedPageIndices(totalPages: totalPages, pageRange: input.pageRange)
+        let processingPageCount = pageIndices.count
         // 需求 3.4:中文为主的文档,OCR 语言优先级 zh-Hans 必须排首位。
         // 先廉价预判语言(强制方向 > 文本层嗅探 > 首个扫描页试识别)再创建 OCR 服务。
         let priority = try await resolveOCRPriority(
             doc: doc,
-            totalPages: totalPages,
+            pageIndices: pageIndices,
             forcedDirection: input.forcedDirection,
             requestedLanguage: input.ocrLanguage
         )
@@ -199,12 +209,12 @@ public final class TranslationPipeline: @unchecked Sendable {
         // 阶段 1/2:逐页解析,扫描页转 OCR。
         var allLines: [TextLine] = []
         var lowQualityPages: [Int] = []
-        for pageIndex in 0..<totalPages {
+        for (processedIndex, pageIndex) in pageIndices.enumerated() {
             try Task.checkCancellation()
-            progress(PipelineProgress(stage: .parsing, currentPage: pageIndex + 1, totalPages: totalPages))
+            progress(PipelineProgress(stage: .parsing, currentPage: processedIndex + 1, totalPages: processingPageCount))
             let extraction = PDFTextExtractor.extractPage(doc, pageIndex: pageIndex)
             if extraction.isScanned {
-                progress(PipelineProgress(stage: .ocr, currentPage: pageIndex + 1, totalPages: totalPages))
+                progress(PipelineProgress(stage: .ocr, currentPage: processedIndex + 1, totalPages: processingPageCount))
                 let recognized: (lines: [TextLine], confidence: Double)
                 if let probe = priority.probedPage, probe.pageIndex == pageIndex {
                     // 优先级判定阶段已用最终优先级识别过该页,直接复用,避免重复 OCR。
@@ -234,7 +244,7 @@ public final class TranslationPipeline: @unchecked Sendable {
 
         if input.options.content == .extractionOnly {
             try Task.checkCancellation()
-            progress(PipelineProgress(stage: .composing, currentPage: totalPages, totalPages: totalPages))
+            progress(PipelineProgress(stage: .composing, currentPage: processingPageCount, totalPages: processingPageCount))
             let composed = DocumentComposer.compose(
                 doc: parsed,
                 translations: [],
@@ -290,8 +300,8 @@ public final class TranslationPipeline: @unchecked Sendable {
 #endif
                 progress(PipelineProgress(
                     stage: .translating,
-                    currentPage: pageEnd,
-                    totalPages: totalPages
+                    currentPage: min(pageIndices.lastIndex(where: { $0 < pageEnd })?.advanced(by: 1) ?? processingPageCount, processingPageCount),
+                    totalPages: processingPageCount
                 ))
                 index += Self.translationBatchSize
             }
@@ -299,7 +309,7 @@ public final class TranslationPipeline: @unchecked Sendable {
 
         // 阶段 6:组装。
         try Task.checkCancellation()
-        progress(PipelineProgress(stage: .composing, currentPage: totalPages, totalPages: totalPages))
+        progress(PipelineProgress(stage: .composing, currentPage: processingPageCount, totalPages: processingPageCount))
         let composed = DocumentComposer.compose(
             doc: parsed,
             translations: translations,
@@ -307,6 +317,22 @@ public final class TranslationPipeline: @unchecked Sendable {
             direction: direction
         )
         return (composed, parsed)
+    }
+
+    static func selectedPageIndices(
+        totalPages: Int,
+        pageRange: ClosedRange<Int>?
+    ) throws -> [Int] {
+        guard totalPages > 0 else {
+            throw PDFLabError.invalidPageRange
+        }
+        let range = pageRange ?? 1...totalPages
+        guard
+              range.lowerBound >= 1,
+              range.upperBound <= totalPages else {
+            throw PDFLabError.invalidPageRange
+        }
+        return range.map { $0 - 1 }
     }
 
 #if DEBUG
