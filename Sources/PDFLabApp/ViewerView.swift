@@ -188,6 +188,8 @@ struct ViewerView: View {
                 .tag(ViewerReadingLayout.paged)
         }
         .pickerStyle(.segmented)
+        // 与控制条统一 28pt 控件高度对齐(.regular 分段只有 ~22pt)。
+        .controlSize(.large)
         .labelsHidden()
         .fixedSize()
         .accessibilityLabel(L10n.t("viewer.comparisonMode"))
@@ -208,7 +210,7 @@ struct ViewerView: View {
             )
                 .frame(
                     width: ViewerControlBarMetrics.zoomMenuWidth,
-                    height: ViewerControlBarMetrics.buttonSize
+                    height: ViewerControlBarMetrics.controlHeight
                 )
                 .help(L10n.t("viewer.zoom"))
             controlBarIconButton("plus", labelKey: "viewer.zoomIn") {
@@ -274,6 +276,8 @@ struct ViewerView: View {
             }
         }
         .pickerStyle(.segmented)
+        // 与控制条统一 28pt 控件高度对齐(.regular 分段只有 ~22pt)。
+        .controlSize(.large)
         .labelsHidden()
         .fixedSize()
         .accessibilityLabel(L10n.t("viewer.pageLayout"))
@@ -292,7 +296,8 @@ struct ViewerView: View {
                 Text("\(state.pageIndex + 1) / \(max(state.pageCount, 1))")
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
-                    .frame(minWidth: 64)
+                    // 页码指示与相邻 28pt 控件同高,基线居中不跳动。
+                    .frame(minWidth: 64, minHeight: ViewerControlBarMetrics.controlHeight)
                     .accessibilityValue(Text("\(state.pageIndex + 1) / \(max(state.pageCount, 1))"))
             }
             controlBarIconButton("chevron.right", labelKey: "viewer.pageNext") {
@@ -338,6 +343,8 @@ private struct PageAnchorControl: View {
     private func anchorField(_ text: Binding<String>, side: Side) -> some View {
         TextField("", text: text)
             .textFieldStyle(.roundedBorder)
+            // 与控制条统一 28pt 控件高度对齐。
+            .controlSize(.large)
             .font(.callout.monospacedDigit())
             .multilineTextAlignment(.center)
             .frame(width: 44)
@@ -404,11 +411,13 @@ struct ViewerZoomPopUpButton: NSViewRepresentable {
                 x: 0,
                 y: 0,
                 width: ViewerControlBarMetrics.zoomMenuWidth,
-                height: ViewerControlBarMetrics.buttonSize
+                height: ViewerControlBarMetrics.controlHeight
             ),
             pullsDown: true
         )
-        button.controlSize = .regular
+        // .large 的 bezel 才能撑到控制条统一的 28pt 视觉高度(.regular 只有 ~25pt,
+        // 与两侧 28×28 图标按钮肉眼可见地不齐);字号维持系统正文,保证可读。
+        button.controlSize = .large
         button.bezelStyle = .rounded
         button.font = .systemFont(ofSize: NSFont.systemFontSize)
         if let cell = button.cell as? NSPopUpButtonCell {
@@ -486,10 +495,13 @@ struct ViewerZoomPopUpButton: NSViewRepresentable {
     }
 }
 
-/// 控制条度量(Figma "viewing pdf" 帧)。
+/// 控制条度量(布局源自 Figma "viewing pdf" 帧;高度统一见 controlHeight)。
 enum ViewerControlBarMetrics {
-    /// 加/减按钮边长(命中区,≥ DESIGN.md 图标按钮 24×24 下限)。
-    static let buttonSize: CGFloat = 32
+    /// 控制条统一控件视觉高度:图标按钮、缩放下拉、分段控件、页码与锚点输入框
+    /// 全部对齐 28pt(DESIGN.md 主要按钮 28–32pt,对齐 macOS .large 控件尺寸)。
+    static let controlHeight: CGFloat = 28
+    /// 图标按钮边长 = 统一控件高度的正方形命中区(≥ DESIGN.md 图标按钮 24×24 下限)。
+    static let buttonSize: CGFloat = controlHeight
     /// 百分比静态文本框宽度。
     static let zoomMenuWidth: CGFloat = 76
     /// 缩放组内元素间距。
