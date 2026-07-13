@@ -7,8 +7,11 @@ struct SingleDocumentView: View {
     var document: ViewerDocument
     var readingLayout = ViewerReadingLayout.defaultLayout
     var zoomCommand: ViewerZoomCommand?
+    var isPaged = false
+    var pageCommand: ViewerPageCommand?
     var onScaleChange: (Double) -> Void = { _ in }
     var onUserZoom: () -> Void = {}
+    var onPageChange: (Int, Int) -> Void = { _, _ in }
 
     var body: some View {
         switch document.kind {
@@ -17,8 +20,11 @@ struct SingleDocumentView: View {
                 document: document,
                 readingLayout: readingLayout,
                 zoomCommand: zoomCommand,
+                isPaged: isPaged,
+                pageCommand: pageCommand,
                 onScaleChange: onScaleChange,
-                onUserZoom: onUserZoom
+                onUserZoom: onUserZoom,
+                onPageChange: onPageChange
             )
         case .text:
             SingleTextView(document: document)
@@ -34,15 +40,18 @@ struct SinglePDFView: NSViewRepresentable {
     var document: ViewerDocument
     var readingLayout: ViewerReadingLayout
     var zoomCommand: ViewerZoomCommand?
+    var isPaged = false
+    var pageCommand: ViewerPageCommand?
     var onScaleChange: (Double) -> Void
     var onUserZoom: () -> Void
+    var onPageChange: (Int, Int) -> Void = { _, _ in }
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
     }
 
     func makeNSView(context: Context) -> PDFView {
-        let pdfView = PDFView()
+        let pdfView = ViewerPDFView()
         // 基线配置与 defaultLayout 一致;此后 displayMode 由
         // ViewerReadingLayout.apply(to:) 在 configure 里单点管理,两处不互相覆盖。
         PDFPreviewConfiguration.apply(to: pdfView)
@@ -50,6 +59,7 @@ struct SinglePDFView: NSViewRepresentable {
         context.coordinator.startMagnificationMonitor(for: pdfView)
         context.coordinator.startScaleObservation(for: pdfView)
         context.coordinator.startViewportObservation(for: pdfView)
+        context.coordinator.startPageObservation(for: pdfView)
         return pdfView
     }
 
@@ -61,6 +71,11 @@ struct SinglePDFView: NSViewRepresentable {
         // 每次更新刷新回显闭包,避免捕获过期上下文。
         context.coordinator.onScaleChange = onScaleChange
         context.coordinator.onUserZoom = onUserZoom
+        context.coordinator.onPageChange = onPageChange
+
+        // 逐页模式吞掉 scrollWheel(滚轮/触控板不得翻页);滚动/双页档随更新恢复放行。
+        // 捏合缩放走 app 级 magnify monitor,不经 scrollWheel,不受影响。
+        (pdfView as? ViewerPDFView)?.swallowsScrollWheel = isPaged
 
         let documentChanged = context.coordinator.documentID != document.id
         if documentChanged {
@@ -76,6 +91,9 @@ struct SinglePDFView: NSViewRepresentable {
                 PDFPreviewConfiguration.apply(.scale(1), to: pdfView)
                 echo.scheduleEchoOfCurrentScale(of: pdfView)
             }
+            // 文档装载后补报页信息(下一 runloop):让 session 拿到真实 pageCount,
+            // 逐页控制条/翻页 clamp 才有页数可用。
+            context.coordinator.scheduleEchoOfCurrentPage(of: pdfView)
         }
 
         // 幂等:值不变时不重触 PDFKit setter(见 ViewerReadingLayout.apply)。
@@ -87,6 +105,7 @@ struct SinglePDFView: NSViewRepresentable {
         }
 
         applyZoomCommandIfNeeded(to: pdfView, context: context)
+        applyPageCommandIfNeeded(to: pdfView, context: context)
     }
 
     /// 按 revision 幂等施加缩放按钮命令;施加期间挂起回显,完成后补报实际 clamp 结果。
@@ -99,32 +118,58 @@ struct SinglePDFView: NSViewRepresentable {
         context.coordinator.apply(command.action, to: pdfView)
     }
 
+    /// 按 revision 幂等施加翻页命令(与缩放同构):施加期间挂起页回显,
+    /// 完成后下一 runloop 补报 clamp 后真实页——脱离 SwiftUI 视图更新栈再写 session。
+    private func applyPageCommandIfNeeded(to pdfView: PDFView, context: Context) {
+        guard let command = pageCommand,
+              context.coordinator.lastAppliedPageRevision != command.revision else { return }
+        context.coordinator.lastAppliedPageRevision = command.revision
+        let observer = context.coordinator.pageObserver
+        observer.isSuspended = true
+        defer {
+            observer.isSuspended = false
+            DispatchQueue.main.async { [weak pdfView] in
+                guard let pdfView else { return }
+                observer.reportCurrentPage(of: pdfView)   // 补报 clamp 后真实页
+            }
+        }
+        guard let document = pdfView.document, document.pageCount > 0,
+              let page = document.page(at: min(max(command.pageIndex, 0), document.pageCount - 1)) else { return }
+        pdfView.go(to: page)
+    }
+
     static func dismantleNSView(_ pdfView: PDFView, coordinator: Coordinator) {
         coordinator.stopMagnificationMonitor()
         coordinator.stopScaleObservation()
         coordinator.stopViewportObservation()
+        coordinator.stopPageObservation()
     }
 
     final class Coordinator {
         var documentID: String?
         var readingLayout: ViewerReadingLayout?
         var lastAppliedZoomRevision: Int?
+        var lastAppliedPageRevision: Int?
         var activeZoomAction: ViewerZoomAction = .scale(1)
         var onScaleChange: ((Double) -> Void)?
         var onUserZoom: (() -> Void)?
+        var onPageChange: ((Int, Int) -> Void)?
 
         /// 文档装入/更换(切标签、晋升、替换同侧文档):基线回中性 100%、
-        /// lastAppliedZoomRevision 归 nil——两侧命令流 revision 各自独立,
-        /// 新文档的命令即便与旧文档 revision 数值相同也必须重放,恢复该侧记住的缩放。
+        /// lastAppliedZoomRevision / lastAppliedPageRevision 归 nil——两侧命令流
+        /// revision 各自独立,新文档的命令即便与旧文档 revision 数值相同也必须重放,
+        /// 恢复该侧记住的缩放与页码(切标签回来重建视图时回到原页)。
         func noteDocumentChanged(to documentID: String) {
             self.documentID = documentID
             activeZoomAction = .scale(1)
             lastAppliedZoomRevision = nil
+            lastAppliedPageRevision = nil
         }
         private var magnificationMonitor: Any?
         private let scaleObserver = PDFScaleEchoObserver()
         private let viewportObserver = PDFViewportResizeObserver()
         private var fitReapplicationScheduled = false
+        let pageObserver = PDFPageEchoObserver()
 
         func startMagnificationMonitor(for pdfView: PDFView) {
             stopMagnificationMonitor()
@@ -210,6 +255,32 @@ struct SinglePDFView: NSViewRepresentable {
             scaleObserver.detach()
         }
 
+        // MARK: 页码回显(.PDFViewPageChanged,见 PDFPageEchoObserver)
+
+        func startPageObservation(for pdfView: PDFView) {
+            pageObserver.onPage = { [weak self] index, pageCount in
+                // 与缩放回显同理:通知可能发生在 SwiftUI 视图更新栈内,
+                // 异步落回主队列再写 session 的 @Published。
+                DispatchQueue.main.async {
+                    self?.onPageChange?(index, pageCount)
+                }
+            }
+            pageObserver.attach(to: pdfView)
+        }
+
+        func stopPageObservation() {
+            pageObserver.detach()
+        }
+
+        /// 文档装载在挂起/更新栈内完成,页通知可能丢失;下一 runloop 补报
+        /// 当前真实页与页数(此时已脱离视图更新栈)。
+        func scheduleEchoOfCurrentPage(of pdfView: PDFView) {
+            DispatchQueue.main.async { [weak self, weak pdfView] in
+                guard let self, let pdfView else { return }
+                self.pageObserver.reportCurrentPage(of: pdfView)
+            }
+        }
+
         /// 程序化改缩放的统一入口:挂起回显 → 执行 → 恢复,防自触发回环。
         func suspendingEcho(_ body: (Coordinator) -> Void) {
             scaleObserver.isSuspended = true
@@ -230,6 +301,7 @@ struct SinglePDFView: NSViewRepresentable {
             stopMagnificationMonitor()
             stopScaleObservation()
             stopViewportObservation()
+            stopPageObservation()
         }
     }
 }

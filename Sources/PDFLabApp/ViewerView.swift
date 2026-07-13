@@ -17,6 +17,9 @@ struct ViewerView: View {
     }
 
     @ObservedObject var session: ViewerSession
+    /// 逐页模式方向键翻页监视器:ViewerView 常驻挂载(MainView ZStack 不销毁),
+    /// 监视器一次安装、handler 内判活——非逐页态/查看器未前置时零损耗放行。
+    @StateObject private var pagedKeys = ViewerPagedKeyMonitor()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,6 +29,16 @@ struct ViewerView: View {
             }
             viewerContent
         }
+        .onAppear {
+            pagedKeys.handler = { [weak session] delta in
+                guard let session, session.isViewerVisible,
+                      session.isPagedSingleActive || session.isPagedComparisonActive else { return false }
+                session.stepPage(by: delta)
+                return true
+            }
+            pagedKeys.start()
+        }
+        .onDisappear { pagedKeys.stop() }
     }
 
     @ViewBuilder
@@ -67,11 +80,18 @@ struct ViewerView: View {
             document: document,
             readingLayout: session.readingLayout,
             zoomCommand: session.zoomCommand,
+            isPaged: session.readingLayout == .paged,
+            pageCommand: session.currentSingleSide.flatMap { session.pageState(for: $0).command },
             onScaleChange: { [weak session] scale in
                 session?.noteObservedZoomScale(scale)
             },
             onUserZoom: { [weak session] in
                 session?.noteUserZoomGesture()
+            },
+            onPageChange: { [weak session] index, count in
+                // 单看时 currentSingleSide 即该文档所在侧;对照回显走 DualPane 自己的回调。
+                guard let session, let side = session.currentSingleSide else { return }
+                session.noteObservedPage(index: index, pageCount: count, on: side)
             }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
