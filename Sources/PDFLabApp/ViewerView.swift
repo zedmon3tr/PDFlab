@@ -149,6 +149,14 @@ struct ViewerView: View {
             if ViewerToolbarPolicy.showsComparisonModeControl(isSideBySide: isSideBySide) {
                 comparisonModeControl
             }
+            // 对照浏览开关:紧跟布局分段控件之后(单看=readingLayoutControl,
+            // 并排=comparisonModeControl),独立成组、不并入分段。
+            if ViewerToolbarPolicy.showsComparisonToggle(
+                currentDocumentKind: session.currentSingleDocument?.kind,
+                isSideBySide: isSideBySide
+            ) {
+                comparisonToggleControl
+            }
             if ViewerToolbarPolicy.showsPageNavigation(
                 currentDocumentKind: session.currentSingleDocument?.kind,
                 isSideBySide: isSideBySide,
@@ -217,6 +225,30 @@ struct ViewerView: View {
         case .fitWidth: session.selectFitWidth()
         case .fitHeight: session.selectFitHeight()
         }
+    }
+
+    /// 对照浏览开关:普通图标按钮 + 并排时持续激活高亮(点按退出,回最近单看聚焦侧);
+    /// 不足两个可对照 PDF 时禁用(与旧标题栏按钮语义一致)。
+    private var comparisonToggleControl: some View {
+        Button {
+            session.toggleSideBySide()
+        } label: {
+            Image(systemName: "rectangle.split.2x1")
+                .font(.system(size: 12, weight: .medium))
+        }
+        .buttonStyle(ControlBarIconButtonStyle(isActive: isSideBySide))
+        .disabled(!session.comparisonEnabled)
+        .accessibilityLabel(L10n.t(comparisonToggleLabelKey))
+        .help(L10n.t(comparisonToggleHelpKey))
+    }
+
+    private var comparisonToggleLabelKey: String {
+        isSideBySide ? "viewer.sideBySide.exit" : "viewer.sideBySide"
+    }
+
+    private var comparisonToggleHelpKey: String {
+        guard session.comparisonEnabled else { return "viewer.sideBySide.disabled" }
+        return comparisonToggleLabelKey
     }
 
     private func controlBarIconButton(
@@ -468,30 +500,65 @@ enum ViewerControlBarMetrics {
     static let cornerRadius: CGFloat = 6
 }
 
-/// 控制条 32×32 图标按钮:整块命中区 + 轻 hover 反馈,遵循 Reduce Motion / 增强对比度。
-private struct ControlBarIconButtonStyle: ButtonStyle {
+/// 控制条方形图标按钮:整块命中区 + 轻 hover 反馈,遵循 Reduce Motion / 增强对比度。
+/// `isActive` 表达持续开启态(如对照浏览进行中):tonal fill + 描边 + accent 图标
+/// 三重信号,不只靠颜色(DESIGN.md 选中态)。
+struct ControlBarIconButtonStyle: ButtonStyle {
+    var isActive = false
+
+    /// 激活态度量(供测试校验落在 DESIGN.md 克制区间):
+    /// fill 明显强于非激活 hover(0.08),描边基值 > 0 保证增强对比度可抬升。
+    static let activeFillOpacity = 0.14
+    static let activeHoverFillOpacity = 0.18
+    static let activeStrokeOpacity = 0.16
+    static let activeHoverStrokeOpacity = 0.24
+
     func makeBody(configuration: Configuration) -> some View {
-        ControlBarIconButtonBody(configuration: configuration)
+        ControlBarIconButtonBody(configuration: configuration, isActive: isActive)
     }
 }
 
 private struct ControlBarIconButtonBody: View {
     let configuration: ButtonStyle.Configuration
+    var isActive = false
 
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorSchemeContrast) private var colorSchemeContrast
     @State private var isHovering = false
 
+    private var fillOpacity: Double {
+        if isActive {
+            return isHovering
+                ? ControlBarIconButtonStyle.activeHoverFillOpacity
+                : ControlBarIconButtonStyle.activeFillOpacity
+        }
+        return isHovering ? 0.08 : 0.035
+    }
+
+    private var strokeBaseOpacity: Double {
+        if isActive {
+            return isHovering
+                ? ControlBarIconButtonStyle.activeHoverStrokeOpacity
+                : ControlBarIconButtonStyle.activeStrokeOpacity
+        }
+        return isHovering ? 0.16 : 0.08
+    }
+
+    private var iconStyle: AnyShapeStyle {
+        guard isEnabled else { return AnyShapeStyle(.secondary) }
+        return isActive ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.primary)
+    }
+
     var body: some View {
         configuration.label
-            .foregroundStyle(isEnabled ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+            .foregroundStyle(iconStyle)
             .frame(
                 width: ViewerControlBarMetrics.buttonSize,
                 height: ViewerControlBarMetrics.buttonSize
             )
             .background(
-                Color.primary.opacity(isHovering ? 0.08 : 0.035),
+                Color.primary.opacity(fillOpacity),
                 in: RoundedRectangle(cornerRadius: ViewerControlBarMetrics.cornerRadius)
             )
             .overlay(
@@ -499,7 +566,7 @@ private struct ControlBarIconButtonBody: View {
                     .strokeBorder(
                         Color.primary.opacity(
                             HoverContrast.strokeOpacity(
-                                base: isHovering ? 0.16 : 0.08,
+                                base: strokeBaseOpacity,
                                 increasedContrast: colorSchemeContrast == .increased
                             )
                         ),
@@ -547,6 +614,12 @@ enum ViewerToolbarPolicy {
     }
 
     static func showsComparisonModeControl(isSideBySide: Bool) -> Bool { isSideBySide }
+
+    /// 对照浏览开关:PDF 语境(单看 PDF 或已并排)时显示;
+    /// 不足两个可对照 PDF 时禁用而非隐藏(禁用逻辑在按钮侧,用 comparisonEnabled)。
+    static func showsComparisonToggle(currentDocumentKind: ViewerDocumentKind?, isSideBySide: Bool) -> Bool {
+        isSideBySide || currentDocumentKind == .pdf
+    }
 
     static func showsPageAnchorControl(isSideBySide: Bool, readingLayout: ViewerReadingLayout) -> Bool {
         isSideBySide && readingLayout == .paged

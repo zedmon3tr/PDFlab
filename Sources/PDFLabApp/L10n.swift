@@ -67,6 +67,7 @@ enum L10n {
         "viewer.tabsFull": ("最多同时打开 2 个文档", "Up to 2 documents can be open at once"),
         "viewer.sideBySide": ("对照浏览", "Compare"),
         "viewer.sideBySide.disabled": ("打开两个 PDF 后可使用对照浏览", "Open two PDFs to compare"),
+        "viewer.sideBySide.exit": ("退出对照浏览", "Exit side-by-side"),
         "viewer.viewMode": ("视图模式", "View Mode"),
         "viewer.modeSingle": ("单看", "Single"),
         "viewer.modeSideBySide": ("对照浏览", "Compare"),

@@ -49,7 +49,17 @@ final class ViewerSession: ObservableObject {
     @Published private(set) var primary: ViewerDocument?
     @Published private(set) var secondary: ViewerDocument?
     /// 切标签/切布局绝不重置缩放:single(.primary)↔single(.secondary) 只是展示另一侧已存状态。
-    @Published var layout: ViewerLayout = .single(.primary)
+    @Published var layout: ViewerLayout = .single(.primary) {
+        didSet {
+            // 任何来源(点标签、关标签、装入文档、测试注入)把布局落到单看,
+            // 都记住聚焦侧——退出对照浏览时回到它。
+            if case .single(let side) = layout {
+                lastSingleFocus = side
+            }
+        }
+    }
+    /// 最近一次单看聚焦侧(会话内记忆):退出对照浏览回到它,不换用户正在看的文档。
+    private(set) var lastSingleFocus: ViewerSide = .primary
     @Published var ratioA = 1.0
     @Published var ratioB = 1.0
     @Published var alert: ViewerAlert?
@@ -389,6 +399,18 @@ final class ViewerSession: ObservableObject {
     /// 点 logo 回首页:只切换可见性,会话不动。
     func returnHome() {
         isViewerVisible = false
+    }
+
+    /// 控制条“对照浏览”开关:未对照且满足对照条件 → 进入并排;
+    /// 已并排 → 退出,回到最近一次单看聚焦侧(该侧文档已不在时兜底回主侧)。
+    /// 不足两个可对照 PDF 时 no-op(按钮同时处于禁用态,这里是最后一道守卫)。
+    func toggleSideBySide() {
+        if effectiveLayout == .sideBySide {
+            let side: ViewerSide = (lastSingleFocus == .secondary && secondary != nil) ? .secondary : .primary
+            layout = .single(side)
+        } else if comparisonEnabled {
+            layout = .sideBySide
+        }
     }
 
     /// 点标签:聚焦该文档并前置查看器(首页点标签 = 回到查看器)。
