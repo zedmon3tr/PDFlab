@@ -39,6 +39,11 @@ struct ViewerView: View {
             pagedKeys.start()
         }
         .onDisappear { pagedKeys.stop() }
+        // 进入逐页对照(切模式/进并排)时把副侧对齐到 主侧 + 锚点偏移,
+        // 副侧命令 revision 前进,pane 重放跳页。
+        .onChange(of: session.isPagedComparisonActive) { _, active in
+            if active { session.realignLinkedPages() }
+        }
     }
 
     @ViewBuilder
@@ -52,7 +57,16 @@ struct ViewerView: View {
                         right: secondary,
                         ratioA: session.ratioA,
                         ratioB: session.ratioB,
-                        readingLayout: session.readingLayout
+                        readingLayout: session.readingLayout,
+                        isPaged: session.isPagedComparisonActive,
+                        leftPageCommand: session.primaryPage.command,
+                        rightPageCommand: session.secondaryPage.command,
+                        onLeftPageChange: { [weak session] index, count in
+                            session?.noteObservedPage(index: index, pageCount: count, on: .primary)
+                        },
+                        onRightPageChange: { [weak session] index, count in
+                            session?.noteObservedPage(index: index, pageCount: count, on: .secondary)
+                        }
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -132,6 +146,9 @@ struct ViewerView: View {
             ) {
                 readingLayoutControl
             }
+            if ViewerToolbarPolicy.showsComparisonModeControl(isSideBySide: isSideBySide) {
+                comparisonModeControl
+            }
             if ViewerToolbarPolicy.showsPageNavigation(
                 currentDocumentKind: session.currentSingleDocument?.kind,
                 isSideBySide: isSideBySide,
@@ -139,9 +156,34 @@ struct ViewerView: View {
             ) {
                 pageNavigationControl
             }
+            if ViewerToolbarPolicy.showsPageAnchorControl(
+                isSideBySide: isSideBySide,
+                readingLayout: session.readingLayout
+            ) {
+                PageAnchorControl(session: session)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 4)
+    }
+
+    /// 对照方式:滚动(连续同步滚动)/ 逐页(方向键同步翻页)。写回共享 readingLayout;
+    /// 从“双页”进入并排时显示为“滚动”(双页在对照中本就强制 continuous)。
+    private var comparisonModeControl: some View {
+        Picker(L10n.t("viewer.comparisonMode"), selection: Binding(
+            get: { session.readingLayout == .paged ? ViewerReadingLayout.paged : .continuous },
+            set: { session.readingLayout = $0 }
+        )) {
+            Label(L10n.t("viewer.comparisonMode.scroll"), systemImage: "scroll")
+                .tag(ViewerReadingLayout.continuous)
+            Label(L10n.t("viewer.comparisonMode.paged"), systemImage: "doc.text")
+                .tag(ViewerReadingLayout.paged)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .accessibilityLabel(L10n.t("viewer.comparisonMode"))
+        .help(L10n.t("viewer.comparisonMode"))
     }
 
     /// [-] [100%⌄] [+]:缩放值整块为原生菜单按钮。
@@ -223,6 +265,73 @@ struct ViewerView: View {
                 session.stepPage(by: 1)
             }
         }
+    }
+}
+
+/// 微调控件:显示并可编辑两侧当前 1 计页码。非编辑期间跟随 session 实时刷新(翻页联动);
+/// 提交时经 session.applyPageAnchor 校验建立锚点偏移,成功后 realignLinkedPages 把右栏
+/// 按新偏移跳页(applyPageAnchor 本身只记录偏移、不发命令);非法输入弹 alert 并回显原值。
+private struct PageAnchorControl: View {
+    @ObservedObject var session: ViewerSession
+
+    @State private var leftText = ""
+    @State private var rightText = ""
+    @FocusState private var focusedField: Side?
+
+    private enum Side: Hashable { case left, right }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(L10n.t("viewer.pageAnchor.left"))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            anchorField($leftText, side: .left)
+            Text("=")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            Text(L10n.t("viewer.pageAnchor.right"))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            anchorField($rightText, side: .right)
+        }
+        .help(L10n.t("viewer.pageAnchor.help"))
+        .onAppear { refreshFromSession() }
+        .onChange(of: session.primaryPage.pageIndex) { refreshFromSession() }
+        .onChange(of: session.secondaryPage.pageIndex) { refreshFromSession() }
+    }
+
+    private func anchorField(_ text: Binding<String>, side: Side) -> some View {
+        TextField("", text: text)
+            .textFieldStyle(.roundedBorder)
+            .font(.callout.monospacedDigit())
+            .multilineTextAlignment(.center)
+            .frame(width: 44)
+            .focused($focusedField, equals: side)
+            .onSubmit { commit() }
+            .accessibilityLabel(side == .left ? L10n.t("viewer.pageAnchor.left") : L10n.t("viewer.pageAnchor.right"))
+    }
+
+    /// 翻页联动:仅在两个输入框都未聚焦时跟随会话刷新,不打断用户输入。
+    private func refreshFromSession() {
+        guard focusedField == nil else { return }
+        leftText = "\(session.primaryPage.pageIndex + 1)"
+        rightText = "\(session.secondaryPage.pageIndex + 1)"
+    }
+
+    private func commit() {
+        if session.applyPageAnchor(primaryText: leftText, secondaryText: rightText) {
+            // applyPageAnchor 只校验并记录偏移,不发页命令;
+            // 这里显式重对齐,右栏立即按新锚点跳页。
+            session.realignLinkedPages()
+        } else {
+            session.alert = ViewerAlert(
+                title: L10n.t("viewer.pageAnchor.invalidTitle"),
+                message: L10n.t("viewer.pageAnchor.invalidMessage")
+            )
+        }
+        focusedField = nil
+        leftText = "\(session.primaryPage.pageIndex + 1)"
+        rightText = "\(session.secondaryPage.pageIndex + 1)"
     }
 }
 

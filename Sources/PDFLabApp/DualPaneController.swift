@@ -35,19 +35,20 @@ struct DualPaneView: View {
     var ratioA: Double
     var ratioB: Double
     var readingLayout: ViewerReadingLayout = .defaultLayout
+    /// 逐页对照:两栏 .singlePage、同步滚动整体停用、翻页命令由 session 单向驱动。
+    var isPaged = false
+    var leftPageCommand: ViewerPageCommand?
+    var rightPageCommand: ViewerPageCommand?
+    var onLeftPageChange: (Int, Int) -> Void = { _, _ in }
+    var onRightPageChange: (Int, Int) -> Void = { _, _ in }
 
-    /// Side-by-side comparison panes are ALWAYS continuous, regardless of whatever
-    /// `readingLayout` the user picked while viewing a single document. The reading-layout
-    /// picker is deliberately hidden in side-by-side mode (`ViewerToolbarPolicy
-    /// .showsReadingLayoutControl`), but the underlying preference value persists across
-    /// mode switches, so a paginated layout carried over from single-document mode would
-    /// otherwise silently break sync-scroll here: a paginated PDFView has near-zero
-    /// scrollable content height per page (sync math's `maxOffset > 0` guard bails out) and
-    /// page-turns don't fire `boundsDidChangeNotification`, which the sync coordinator
-    /// exclusively listens to. Ignores `preference` entirely by design — kept as a parameter
-    /// only so the call sites below read as an explicit, intentional override.
-    static func paneReadingLayout(for preference: ViewerReadingLayout) -> ViewerReadingLayout {
-        .continuous
+    /// 对照双栏布局:逐页对照 = 两栏都 .singlePage(同步滚动经 `sync.isEnabled` 整体停用,
+    /// 页联动完全走 session 的命令流);滚动对照 = 一律 continuous——无论单文档模式留下的
+    /// `readingLayout` 偏好是什么(双页等分页布局每页可滚高度近零,sync math 的
+    /// `maxOffset > 0` 守卫直接退出,且翻页不发 `boundsDidChangeNotification`,会悄悄
+    /// 弄坏同步滚动)。`preference` 仅保留为参数,让调用点读起来是显式、有意的覆盖。
+    static func paneReadingLayout(for preference: ViewerReadingLayout, isPaged: Bool) -> ViewerReadingLayout {
+        isPaged ? .paged : .continuous
     }
 
     /// 左栏占比(0...1),拖动分隔条时更新。
@@ -78,9 +79,12 @@ struct DualPaneView: View {
                     side: .left,
                     sync: sync,
                     // Dual-pane sync-scroll fundamentally requires continuous, non-paginated
-                    // PDFViews (see DualPaneView.paneReadingLayout(for:) doc). The
+                    // PDFViews (see DualPaneView.paneReadingLayout(for:isPaged:) doc). The
                     // `readingLayout` preference is intentionally NOT threaded through as-is.
-                    readingLayout: Self.paneReadingLayout(for: readingLayout)
+                    readingLayout: Self.paneReadingLayout(for: readingLayout, isPaged: isPaged),
+                    isPaged: isPaged,
+                    pageCommand: leftPageCommand,
+                    onPageChange: onLeftPageChange
                 )
                     .frame(width: leftWidth)
                     .id(left.id)
@@ -91,7 +95,10 @@ struct DualPaneView: View {
                     document: right,
                     side: .right,
                     sync: sync,
-                    readingLayout: Self.paneReadingLayout(for: readingLayout)
+                    readingLayout: Self.paneReadingLayout(for: readingLayout, isPaged: isPaged),
+                    isPaged: isPaged,
+                    pageCommand: rightPageCommand,
+                    onPageChange: onRightPageChange
                 )
                     .frame(maxWidth: .infinity)
                     .id(right.id)
@@ -100,6 +107,10 @@ struct DualPaneView: View {
         .onAppear { sync.setRatios(ratioA: ratioA, ratioB: ratioB) }
         .onChange(of: ratioA) { sync.setRatios(ratioA: ratioA, ratioB: ratioB) }
         .onChange(of: ratioB) { sync.setRatios(ratioA: ratioA, ratioB: ratioB) }
+        // 逐页对照下同步滚动必须完全惰性:page 命令的 go(to:) 会发 boundsDidChange,
+        // 若不停用会与命令流互相拉扯(红线,见 CHANGELOG)。
+        .onAppear { sync.isEnabled = !isPaged }
+        .onChange(of: isPaged) { sync.isEnabled = !isPaged }
     }
 
     /// 把 dividerFraction 夹到最小栏宽换算出的允许区间;宽度不足两栏最小宽时不强制,回落到 0.5 附近。
@@ -200,6 +211,9 @@ private struct SinglePaneRepresentable: NSViewRepresentable {
     let side: SyncScrollCoordinator.Side
     let sync: SyncScrollCoordinator
     let readingLayout: ViewerReadingLayout
+    var isPaged = false
+    var pageCommand: ViewerPageCommand?
+    var onPageChange: (Int, Int) -> Void = { _, _ in }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(sync: sync, side: side)
@@ -214,8 +228,14 @@ private struct SinglePaneRepresentable: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         // 文档不变时无需重建;文档本身随 ViewerView 的 sideBySide 切换携带,identity 变化会触发新的 makeNSView。
         context.coordinator.refresh()
-        // 幂等重申强制 continuous(apply 内部值不变时不触 PDFKit setter)。
+        context.coordinator.onPageChange = onPageChange
+        // 逐页模式吞掉 scrollWheel(滚轮/触控板不得翻页);滚动档随更新恢复放行。
+        context.coordinator.setSwallowsScrollWheel(isPaged)
+        // 幂等重申当前折算布局(paged→.singlePage / 滚动→continuous;
+        // apply 内部值不变时不触 PDFKit setter,变化时含 layout + 可视位置保持)。
         context.coordinator.apply(readingLayout)
+        // 按 revision 幂等施加翻页命令(命令由 session 单向下发,pane 层不自行计算联动)。
+        context.coordinator.applyPageCommandIfNeeded(pageCommand)
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
@@ -240,7 +260,7 @@ private struct SinglePaneRepresentable: NSViewRepresentable {
             return (buildMessage(L10n.t("viewer.openFailed")), nil, nil)
         }
 
-        let pdfView = PDFView()
+        let pdfView = ViewerPDFView()
         pdfView.document = pdfDocument
         pdfView.autoScales = true
         pdfView.backgroundColor = .textBackgroundColor
@@ -282,6 +302,11 @@ private struct SinglePaneRepresentable: NSViewRepresentable {
         private let side: SyncScrollCoordinator.Side
         private weak var view: NSView?
         private weak var pdfView: PDFView?
+        /// 页命令幂等施加水位(与 SinglePDFView 同构);pane 经 `.id(document.id)` 随文档
+        /// 重建,新 Coordinator 从 nil 起步,存量命令在重建后必然重放(恢复该侧页码)。
+        var lastAppliedPageRevision: Int?
+        var onPageChange: ((Int, Int) -> Void)?
+        let pageObserver = PDFPageEchoObserver()
 
         init(sync: SyncScrollCoordinator, side: SyncScrollCoordinator.Side) {
             self.sync = sync
@@ -296,6 +321,22 @@ private struct SinglePaneRepresentable: NSViewRepresentable {
             DispatchQueue.main.async { [weak self] in
                 self?.sync.refreshRegistration(side: self?.side ?? .left)
             }
+            if let pdfView {
+                pageObserver.onPage = { [weak self] index, pageCount in
+                    // 页通知可能发生在 SwiftUI 视图更新栈内(布局/命令施加),
+                    // 异步落回主队列再写 session 的 @Published(与 SinglePDFView 同约定)。
+                    DispatchQueue.main.async {
+                        self?.onPageChange?(index, pageCount)
+                    }
+                }
+                pageObserver.attach(to: pdfView)
+                // 文档装载在 makeNSView 内同步完成,页通知不会自发补发;
+                // 下一 runloop 补报真实页码与页数,session 才有 pageCount 可 clamp。
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, let pdfView = self.pdfView else { return }
+                    self.pageObserver.reportCurrentPage(of: pdfView)
+                }
+            }
         }
 
         func refresh() {
@@ -307,8 +348,37 @@ private struct SinglePaneRepresentable: NSViewRepresentable {
             readingLayout.apply(to: pdfView)
         }
 
+        func setSwallowsScrollWheel(_ swallows: Bool) {
+            (pdfView as? ViewerPDFView)?.swallowsScrollWheel = swallows
+        }
+
+        /// 按 revision 幂等施加翻页命令(与 SinglePDFView.applyPageCommandIfNeeded 同构):
+        /// 施加期间挂起页回显,完成后下一 runloop 补报 clamp 后真实页——
+        /// 脱离 SwiftUI 视图更新栈再写 session,且命令→回显不成环。
+        func applyPageCommandIfNeeded(_ command: ViewerPageCommand?) {
+            guard let command, let pdfView,
+                  lastAppliedPageRevision != command.revision else { return }
+            lastAppliedPageRevision = command.revision
+            pageObserver.isSuspended = true
+            defer {
+                pageObserver.isSuspended = false
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, let pdfView = self.pdfView else { return }
+                    self.pageObserver.reportCurrentPage(of: pdfView)   // 补报 clamp 后真实页
+                }
+            }
+            guard let document = pdfView.document, document.pageCount > 0,
+                  let page = document.page(at: min(max(command.pageIndex, 0), document.pageCount - 1)) else { return }
+            pdfView.go(to: page)
+        }
+
         func detach() {
+            pageObserver.detach()
             sync.unregister(side: side)
+        }
+
+        deinit {
+            pageObserver.detach()
         }
     }
 }
@@ -344,6 +414,10 @@ final class SyncScrollCoordinator: ObservableObject {
     private var rightPane: Pane?
     private var observers: [NSObjectProtocol] = []
     private var math = ScrollSyncMath(ratioA: 1, ratioB: 1)
+
+    /// 逐页对照时置 false:页命令的 go(to:) 会发 boundsDidChange 通知,
+    /// 同步滚动必须完全惰性,否则会与命令流互相拉扯(红线)。观察者保留,只在入口短路。
+    var isEnabled = true
 
     /// 同步守卫:仅在程序化设置对侧位置的同步调用栈内为 true,阻断同步派发的通知。
     private var isSyncing = false
@@ -430,7 +504,8 @@ final class SyncScrollCoordinator: ObservableObject {
     // MARK: 同步逻辑
 
     private func scrollChanged(from side: Side) {
-        guard !isSyncing,
+        guard isEnabled,
+              !isSyncing,
               let leftPane,
               let rightPane else { return }
 

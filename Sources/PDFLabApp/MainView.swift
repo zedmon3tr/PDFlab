@@ -215,7 +215,10 @@ struct MainView: View {
             }
         }
         ToolbarItemGroup {
-            if session.isViewerVisible, session.secondary != nil, session.effectiveLayout == .sideBySide {
+            // 滚动比例只在滚动对照有意义;逐页对照(readingLayout == .paged)由锚点偏移联动,隐藏比例项。
+            if session.isViewerVisible, session.secondary != nil,
+               session.effectiveLayout == .sideBySide,
+               ViewerToolbarPolicy.showsRatioControls(isSideBySide: true, readingLayout: session.readingLayout) {
                 ratioControl(L10n.t("viewer.leftRatio"), value: $session.ratioA)
                 ratioControl(L10n.t("viewer.rightRatio"), value: $session.ratioB)
                 resetRatioButton
