@@ -110,7 +110,12 @@ struct ViewerView: View {
         ) || ViewerToolbarPolicy.showsReadingLayoutControl(
             currentDocumentKind: session.currentSingleDocument?.kind,
             isSideBySide: isSideBySide
-        )
+        ) || ViewerToolbarPolicy.showsComparisonModeControl(isSideBySide: isSideBySide)
+            || ViewerToolbarPolicy.showsPageNavigation(
+                currentDocumentKind: session.currentSingleDocument?.kind,
+                isSideBySide: isSideBySide,
+                readingLayout: session.readingLayout
+            )
     }
 
     private var controlBar: some View {
@@ -126,6 +131,13 @@ struct ViewerView: View {
                 isSideBySide: isSideBySide
             ) {
                 readingLayoutControl
+            }
+            if ViewerToolbarPolicy.showsPageNavigation(
+                currentDocumentKind: session.currentSingleDocument?.kind,
+                isSideBySide: isSideBySide,
+                readingLayout: session.readingLayout
+            ) {
+                pageNavigationControl
             }
         }
         .frame(maxWidth: .infinity)
@@ -192,6 +204,25 @@ struct ViewerView: View {
         .fixedSize()
         .accessibilityLabel(L10n.t("viewer.pageLayout"))
         .help(L10n.t("viewer.pageLayout"))
+    }
+
+    /// 逐页翻页:◀ 页码/总页 ▶。并排时页码显示由 Task 5 的微调控件承担,这里只出按钮。
+    private var pageNavigationControl: some View {
+        HStack(spacing: ViewerControlBarMetrics.itemSpacing) {
+            controlBarIconButton("chevron.left", labelKey: "viewer.pagePrevious") {
+                session.stepPage(by: -1)
+            }
+            if !isSideBySide, let side = session.currentSingleSide {
+                let state = session.pageState(for: side)
+                Text("\(state.pageIndex + 1) / \(max(state.pageCount, 1))")
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 64)
+            }
+            controlBarIconButton("chevron.right", labelKey: "viewer.pageNext") {
+                session.stepPage(by: 1)
+            }
+        }
     }
 }
 
@@ -395,6 +426,22 @@ enum ViewerToolbarPolicy {
 
     static func showsZoomControl(currentDocumentKind: ViewerDocumentKind?, isSideBySide: Bool) -> Bool {
         currentDocumentKind == .pdf && !isSideBySide
+    }
+
+    static func showsPageNavigation(
+        currentDocumentKind: ViewerDocumentKind?, isSideBySide: Bool, readingLayout: ViewerReadingLayout
+    ) -> Bool {
+        readingLayout == .paged && (isSideBySide || currentDocumentKind == .pdf)
+    }
+
+    static func showsComparisonModeControl(isSideBySide: Bool) -> Bool { isSideBySide }
+
+    static func showsPageAnchorControl(isSideBySide: Bool, readingLayout: ViewerReadingLayout) -> Bool {
+        isSideBySide && readingLayout == .paged
+    }
+
+    static func showsRatioControls(isSideBySide: Bool, readingLayout: ViewerReadingLayout) -> Bool {
+        isSideBySide && readingLayout != .paged
     }
 }
 
