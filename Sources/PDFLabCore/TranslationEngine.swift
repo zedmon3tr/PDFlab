@@ -1,7 +1,7 @@
 import Foundation
 
 public protocol TranslationEngine: Sendable {
-    var id: String { get }                 // "apple"/"llm"/"google"/"deepl"/"youdao"
+    var id: String { get }                 // "apple"/"openai"/"claude"/"deepseek"/"google"/"deepl"/"youdao"
     var isUnofficial: Bool { get }         // UI 标注"非官方接口,可能不稳定"
     var perRequestCharLimit: Int { get }
     func translate(_ texts: [String], direction: TranslationDirection) async throws -> [String]

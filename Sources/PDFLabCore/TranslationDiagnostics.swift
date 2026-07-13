@@ -83,6 +83,11 @@ public enum TranslationDiagnostics {
         .appendingPathComponent(".pdflab-dev/translation.jsonl")
     static let fileLog = logURL.map { TranslationDiagnosticFileLog(url: $0) }
     public static let shared: any TranslationDiagnosticSink = {
+        let executable = CommandLine.arguments.first ?? ""
+        if ProcessInfo.processInfo.environment["PDFLAB_DISABLE_DIAGNOSTICS"] == "1"
+            || executable.contains("PackageTests") || executable.contains(".xctest") {
+            return DisabledTranslationDiagnosticSink()
+        }
         if let fileLog { return fileLog }
         return DisabledTranslationDiagnosticSink()
     }()

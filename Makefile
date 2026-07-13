@@ -4,7 +4,7 @@ FW  := /Library/Developer/CommandLineTools/Library/Developer/Frameworks
 TESTFLAGS := -Xswiftc -F$(FW) -Xlinker -F$(FW) -Xlinker -rpath -Xlinker $(FW)
 .PHONY: build test run bundle dmg dev-bundle dev-run
 build: ; $(DEV) swift build
-test:  ; $(DEV) swift test $(TESTFLAGS)
+test:  ; PDFLAB_DISABLE_DIAGNOSTICS=1 $(DEV) swift test $(TESTFLAGS)
 run: bundle
 	-pkill -x PDFLabApp
 	-pkill -x PDFlab

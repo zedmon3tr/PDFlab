@@ -26,6 +26,11 @@ enum L10n {
         case .unsupportedLanguage(let detected): return t("error.unsupportedLanguage") + " (\(detected))"
         case .languagePackMissing: return t("error.languagePackMissing")
         case .engineInvalidKey: return t("error.engineInvalidKey")
+        case .engineInsufficientBalance: return t("error.engineInsufficientBalance")
+        case .engineOutputTruncated: return t("error.engineOutputTruncated")
+        case .engineContentFiltered: return t("error.engineContentFiltered")
+        case .engineInvalidRequest: return t("error.engineInvalidRequest")
+        case .keychainFailure: return t("error.keychainSaveFailed")
         case .engineRateLimited: return t("error.engineRateLimited")
         case .engineUnavailable(let engineID): return t("error.engineUnavailable") + " (\(engineID))"
         case .networkError(let detail): return t("error.networkError") + " (\(detail))"
@@ -181,21 +186,34 @@ enum L10n {
         "settings.engine": ("翻译引擎", "Translation Engine"),
         "settings.data": ("数据管理", "Data Management"),
         "settings.service.listTitle": ("翻译服务", "Translation Services"),
-        "settings.service.enabled": ("已启用", "Enabled"),
         "settings.service.noConfiguration": ("%@ 没有可供配置的选项", "%@ has no configurable options"),
 
         // 设置 - 引擎名
         "engine.apple": ("本地翻译", "On-Device Translation"),
-        "engine.llm": ("LLM 接口", "LLM API"),
+        "engine.openai": ("OpenAI", "OpenAI"),
+        "engine.claude": ("Claude", "Claude"),
+        "engine.deepseek": ("DeepSeek", "DeepSeek"),
         "engine.google": ("Google", "Google"),
         "engine.deepl": ("DeepL", "DeepL"),
         "engine.youdao": ("有道", "Youdao"),
         "engine.unofficialBadge": ("非官方接口,可能不稳定", "Unofficial API, may be unstable"),
+        "engine.unofficialCompactBadge": ("非官方", "Unofficial"),
+        "engine.experimentalBadge": ("实验性", "Experimental"),
+        "engine.youdao.experimental": (
+            "实验性，仅建议短文本；长文可能失败",
+            "Experimental; recommended for short text only. Long documents may fail."
+        ),
+        "engine.deepseek.billing": ("需要 API Key，按量计费", "Requires an API key; usage-based billing"),
 
         // 设置 - 凭据字段
-        "settings.llm.baseURL": ("接口地址 (baseURL)", "Base URL"),
-        "settings.llm.model": ("模型", "Model"),
-        "settings.llm.apiKey": ("API Key", "API Key"),
+        "settings.provider.baseURL": ("接口地址", "Base URL"),
+        "settings.provider.baseURL.placeholder": ("例如 https://api.example.com/v1", "For example, https://api.example.com/v1"),
+        "settings.provider.model": ("模型", "Model"),
+        "settings.provider.apiKey": ("API Key", "API Key"),
+        "settings.provider.apiKey.placeholder": ("请输入 API Key", "Enter API key"),
+        "settings.service.enable": ("启用", "Enable"),
+        "settings.service.enabled": ("已启用", "Enabled"),
+        "settings.service.enable.hint": ("将此服务设为当前翻译服务", "Make this the active translation service"),
         "settings.testConnection": ("测试连接", "Test Connection"),
         "settings.testConnection.testing": ("正在测试…", "Testing…"),
         "settings.testConnection.success": ("连接成功", "Connection succeeded"),
@@ -238,6 +256,12 @@ enum L10n {
         "error.unsupportedLanguage": ("暂不支持该文档语言", "The document language is not supported"),
         "error.languagePackMissing": ("本地翻译语言包缺失,请在系统设置中下载", "The on-device language pack is missing; download it in System Settings"),
         "error.engineInvalidKey": ("密钥无效,请检查凭据", "Invalid credentials; please check your keys"),
+        "error.engineInsufficientBalance": ("DeepSeek 账户余额不足，请充值后重试", "Insufficient DeepSeek balance; add funds and try again"),
+        "error.engineOutputTruncated": ("翻译输出被截断，请缩短内容后重试", "The translation was truncated; shorten the content and try again"),
+        "error.engineContentFiltered": ("内容被翻译服务拦截，无法完成翻译", "The translation service filtered this content"),
+        "error.engineInvalidRequest": ("翻译请求格式或参数无效，请更新应用或联系开发者", "The translation request format or parameters are invalid; update the app or contact the developer"),
+        "error.keychainSaveFailed": ("无法保存 API Key，请检查钥匙串权限", "Could not save the API key; check Keychain permissions"),
+        "error.providerBaseURLInvalid": ("接口地址必须是安全的 HTTPS 地址，且不能包含账号、查询参数或片段", "The base URL must be a secure HTTPS URL without credentials, query parameters, or fragments"),
         "error.engineRateLimited": ("请求过于频繁,请稍后重试", "Rate limited; please try again later"),
         "error.engineUnavailable": ("翻译引擎暂不可用", "The translation engine is unavailable"),
         "error.networkError": ("网络错误", "Network error"),

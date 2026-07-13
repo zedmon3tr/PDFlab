@@ -1,9 +1,9 @@
 import Foundation
 
-public struct OpenAIConfig: Codable, Equatable, Sendable {
-    public static let defaultBaseURL = "https://api.openai.com/v1"
-    public static let models = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol"]
-    public static let defaultModel = "gpt-5.6-luna"
+public struct ClaudeConfig: Codable, Equatable, Sendable {
+    public static let defaultBaseURL = "https://api.anthropic.com/v1"
+    public static let models = ["claude-sonnet-5", "claude-haiku-4-5", "claude-opus-4-8", "claude-fable-5"]
+    public static let defaultModel = "claude-sonnet-5"
     public var baseURL: String
     public var model: String
     public init(baseURL: String = defaultBaseURL, model: String = defaultModel) {
@@ -11,53 +11,37 @@ public struct OpenAIConfig: Codable, Equatable, Sendable {
     }
 }
 
-/// OpenAI 官方 Responses API 翻译引擎。
-public struct OpenAIEngine: TranslationEngine {
-    public let id = "openai", isUnofficial = false, perRequestCharLimit = 8000
-    private let config: OpenAIConfig
-    private let apiKey: String
-    private let client: HTTPClient
-    private let limiter: RateLimiter
-    private let retryPolicy: TranslationRetryPolicy
+public struct ClaudeEngine: TranslationEngine {
+    public let id = "claude", isUnofficial = false, perRequestCharLimit = 8000
+    private let config: ClaudeConfig; private let apiKey: String; private let client: HTTPClient
+    private let limiter: RateLimiter; private let retryPolicy: TranslationRetryPolicy
 #if DEBUG
     private let diagnostics: any TranslationDiagnosticSink
-#endif
-
-#if DEBUG
-    public init(config: OpenAIConfig, apiKey: String, client: HTTPClient = URLSession.shared,
-                limiter: RateLimiter = RateLimiter(minInterval: 0.2),
-                retryPolicy: TranslationRetryPolicy = TranslationRetryPolicy(),
+    public init(config: ClaudeConfig, apiKey: String, client: HTTPClient = URLSession.shared,
+                limiter: RateLimiter = RateLimiter(minInterval: 0.2), retryPolicy: TranslationRetryPolicy = TranslationRetryPolicy(),
                 diagnostics: any TranslationDiagnosticSink = TranslationDiagnostics.shared) {
-        self.config = config; self.apiKey = apiKey; self.client = client
-        self.limiter = limiter; self.retryPolicy = retryPolicy; self.diagnostics = diagnostics
+        self.config = config; self.apiKey = apiKey; self.client = client; self.limiter = limiter; self.retryPolicy = retryPolicy; self.diagnostics = diagnostics
     }
 #else
-    public init(config: OpenAIConfig, apiKey: String, client: HTTPClient = URLSession.shared,
-                limiter: RateLimiter = RateLimiter(minInterval: 0.2),
-                retryPolicy: TranslationRetryPolicy = TranslationRetryPolicy()) {
-        self.config = config; self.apiKey = apiKey; self.client = client
-        self.limiter = limiter; self.retryPolicy = retryPolicy
+    public init(config: ClaudeConfig, apiKey: String, client: HTTPClient = URLSession.shared,
+                limiter: RateLimiter = RateLimiter(minInterval: 0.2), retryPolicy: TranslationRetryPolicy = TranslationRetryPolicy()) {
+        self.config = config; self.apiKey = apiKey; self.client = client; self.limiter = limiter; self.retryPolicy = retryPolicy
     }
 #endif
-
     public func translate(_ texts: [String], direction: TranslationDirection) async throws -> [String] {
-        var output: [String] = []
-        for text in texts { output.append(try await complete(text, direction: direction)) }
-        return output
+        var output: [String] = []; for text in texts { output.append(try await complete(text, direction: direction)) }; return output
     }
     public func testConnection() async throws { _ = try await complete("test", direction: .enToZh) }
-
     private func complete(_ text: String, direction: TranslationDirection) async throws -> String {
-        let url = try ProviderBaseURL.endpoint(baseURL: config.baseURL, path: "/responses")
+        let url = try ProviderBaseURL.endpoint(baseURL: config.baseURL, path: "/messages")
         var request = URLRequest(url: url); request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         let target = direction == .enToZh ? "Simplified Chinese" : "English"
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": config.model,
-            "instructions": "Translate the input into \(target), preserving structure and terminology. Output only the translation.",
-            "input": text,
-        ])
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["model": config.model, "max_tokens": 8192, "stream": false,
+            "system": "Translate into \(target), preserving structure and terminology. Output only the translation.",
+            "messages": [["role": "user", "content": text]]])
         for attempt in 0...retryPolicy.maxRetries {
 #if DEBUG
             let context = TranslationDiagnosticScope.current ?? .init(runID: UUID())
@@ -73,8 +57,7 @@ public struct OpenAIEngine: TranslationEngine {
             }
 #endif
             do {
-                try await limiter.waitTurn()
-                let (data, response) = try await client.data(for: request)
+                try await limiter.waitTurn(); let (data, response) = try await client.data(for: request)
                 guard let http = response as? HTTPURLResponse else {
 #if DEBUG
                     await log(nil, "invalid-response")
@@ -108,14 +91,12 @@ public struct OpenAIEngine: TranslationEngine {
 #if DEBUG
                     await log(http.statusCode, attempt < retryPolicy.maxRetries ? "rate-limited" : "rate-limited-exhausted")
 #endif
-                    if attempt < retryPolicy.maxRetries { try await retryPolicy.wait(beforeRetry: attempt); continue }
-                    throw PDFLabError.engineRateLimited
+                    if attempt < retryPolicy.maxRetries { try await retryPolicy.wait(beforeRetry: attempt); continue }; throw PDFLabError.engineRateLimited
                 case 500...599:
 #if DEBUG
                     await log(http.statusCode, attempt < retryPolicy.maxRetries ? "server" : "server-exhausted")
 #endif
-                    if attempt < retryPolicy.maxRetries { try await retryPolicy.wait(beforeRetry: attempt); continue }
-                    throw PDFLabError.engineUnavailable(engineID: id)
+                    if attempt < retryPolicy.maxRetries { try await retryPolicy.wait(beforeRetry: attempt); continue }; throw PDFLabError.engineUnavailable(engineID: id)
                 default:
 #if DEBUG
                     await log(http.statusCode, "permanent-http")
@@ -139,38 +120,21 @@ public struct OpenAIEngine: TranslationEngine {
 #if DEBUG
                 await log(nil, attempt < retryPolicy.maxRetries ? "network" : "network-exhausted")
 #endif
-                if attempt < retryPolicy.maxRetries { try await retryPolicy.wait(beforeRetry: attempt); continue }
-                throw PDFLabError.networkError(error.localizedDescription)
+                if attempt < retryPolicy.maxRetries { try await retryPolicy.wait(beforeRetry: attempt); continue }; throw PDFLabError.networkError(error.localizedDescription)
             }
         }
         throw PDFLabError.engineUnavailable(engineID: id)
     }
-
     static func parseResponse(_ data: Data) throws -> String {
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw PDFLabError.engineUnavailable(engineID: "openai") }
-        if root["status"] as? String == "incomplete" {
-            let reason = (root["incomplete_details"] as? [String: Any])?["reason"] as? String
-            if reason == "max_output_tokens" { throw PDFLabError.engineOutputTruncated }
-            if reason == "content_filter" { throw PDFLabError.engineContentFiltered }
-            throw PDFLabError.engineUnavailable(engineID: "openai")
-        }
-        guard root["status"] as? String == "completed", let output = root["output"] as? [[String: Any]] else { throw PDFLabError.engineUnavailable(engineID: "openai") }
-        let texts = output.compactMap { item -> [String] in
-            guard item["type"] as? String == "message", let content = item["content"] as? [[String: Any]] else { return [] }
-            return content.compactMap { $0["type"] as? String == "output_text" ? $0["text"] as? String : nil }
-        }.flatMap { $0 }
-        let result = texts.joined().trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !result.isEmpty else { throw PDFLabError.engineUnavailable(engineID: "openai") }
-        return result
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let stop = root["stop_reason"] as? String else { throw PDFLabError.engineUnavailable(engineID: "claude") }
+        if stop == "max_tokens" { throw PDFLabError.engineOutputTruncated }
+        guard stop == "end_turn" || stop == "stop_sequence", let content = root["content"] as? [[String: Any]] else { throw PDFLabError.engineUnavailable(engineID: "claude") }
+        let result = content.compactMap { $0["type"] as? String == "text" ? $0["text"] as? String : nil }.joined().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !result.isEmpty else { throw PDFLabError.engineUnavailable(engineID: "claude") }; return result
     }
-
 #if DEBUG
     private static func category(_ error: PDFLabError) -> String {
-        switch error {
-        case .engineOutputTruncated: return "output-truncated"
-        case .engineContentFiltered: return "content-filtered"
-        default: return "parse"
-        }
+        switch error { case .engineOutputTruncated: return "output-truncated"; case .engineContentFiltered: return "content-filtered"; default: return "parse" }
     }
 #endif
 }

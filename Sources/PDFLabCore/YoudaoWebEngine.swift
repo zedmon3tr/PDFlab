@@ -18,9 +18,21 @@ import CommonCrypto
 /// 更新导致失效;届时需重新逆向(参考 Easydict `YoudaoService+Translate.swift`)。
 public struct YoudaoWebEngine: TranslationEngine {
     // 网页接口比官方 API 更严格,单次请求上限取保守值。
-    public let id = "youdao", isUnofficial = true, perRequestCharLimit = 2000
+    public let id = "youdao", isUnofficial = true, perRequestCharLimit = 900
     private let client: HTTPClient
     private let limiter: RateLimiter
+#if DEBUG
+    private let diagnostics: any TranslationDiagnosticSink
+#endif
+    private struct ResponseInvalid: Error {}
+    private struct HTTPResult {
+        let data: Data
+#if DEBUG
+        let requestID: UUID
+        let started: Date
+        let status: Int
+#endif
+    }
 
     /// 取密钥步骤的固定签名 key(逆向公开值,可能漂移)。
     static let defaultKey = "asdjnjfenknafdfsdfsd"
@@ -38,21 +50,46 @@ public struct YoudaoWebEngine: TranslationEngine {
         var aesIvSeed: String
     }
 
+#if DEBUG
+    public init(client: HTTPClient = URLSession.shared, limiter: RateLimiter = RateLimiter(minInterval: 1.0),
+                diagnostics: any TranslationDiagnosticSink = TranslationDiagnostics.shared) {
+        self.client = client; self.limiter = limiter; self.diagnostics = diagnostics
+    }
+#else
     public init(client: HTTPClient = URLSession.shared, limiter: RateLimiter = RateLimiter(minInterval: 1.0)) {
         self.client = client
         self.limiter = limiter
     }
+#endif
 
     public func translate(_ texts: [String], direction: TranslationDirection) async throws -> [String] {
-        try await limiter.waitTurn()
-        let session = try await fetchSessionKey()
+#if DEBUG
+        let context = TranslationDiagnosticScope.current ?? .init(runID: UUID())
+        return try await TranslationDiagnosticScope.$current.withValue(context) {
+            try await translateWithinContext(texts, direction: direction)
+        }
+#else
+        return try await translateWithinContext(texts, direction: direction)
+#endif
+    }
+
+    private func translateWithinContext(_ texts: [String], direction: TranslationDirection) async throws -> [String] {
+        var session = try await fetchSessionKey(direction: direction)
 
         var results: [String] = []
         for text in texts {
             var translated = ""
             for chunk in TextChunker.split(text, limit: perRequestCharLimit) {
-                try await limiter.waitTurn()
-                translated += try await translateChunk(chunk, direction: direction, session: session)
+                do {
+                    translated += try await translateChunk(chunk, direction: direction, session: session, retry: 0)
+                } catch is ResponseInvalid {
+                    session = try await fetchSessionKey(direction: direction)
+                    do {
+                        translated += try await translateChunk(chunk, direction: direction, session: session, retry: 1)
+                    } catch is ResponseInvalid {
+                        throw PDFLabError.engineUnavailable(engineID: id)
+                    }
+                }
             }
             results.append(translated)
         }
@@ -61,7 +98,7 @@ public struct YoudaoWebEngine: TranslationEngine {
 
     // MARK: - 第 1 步:取会话密钥
 
-    private func fetchSessionKey() async throws -> SessionKey {
+    private func fetchSessionKey(direction: TranslationDirection) async throws -> SessionKey {
         let mysticTime = String(Int(Date().timeIntervalSince1970 * 1000))
         let sign = Self.sign(mysticTime: mysticTime, secret: Self.defaultKey)
 
@@ -73,13 +110,23 @@ public struct YoudaoWebEngine: TranslationEngine {
         request.httpMethod = "GET"
         Self.applyBrowserHeaders(&request)
 
-        let data = try await perform(request)
+        let response = try await perform(request, stage: "youdao-handshake", direction: direction, characterCount: 0, retry: 0)
         // 取密钥响应是明文 JSON:{ "code":0, "data":{ "secretKey":..,"aesKey":..,"aesIv":.. } }
-        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard let root = try? JSONSerialization.jsonObject(with: response.data) as? [String: Any],
               let payload = root["data"] as? [String: Any],
               let secretKey = payload["secretKey"] as? String, !secretKey.isEmpty else {
+#if DEBUG
+            await record(stage: "youdao-handshake-parse", direction: direction, characterCount: 0,
+                         status: response.status, retry: 0, error: "session-key-invalid",
+                         requestID: response.requestID, started: response.started)
+#endif
             throw PDFLabError.engineUnavailable(engineID: id)
         }
+#if DEBUG
+        await record(stage: "youdao-handshake", direction: direction, characterCount: 0,
+                     status: response.status, retry: 0, error: nil,
+                     requestID: response.requestID, started: response.started)
+#endif
         return SessionKey(
             secretKey: secretKey,
             aesKeySeed: (payload["aesKey"] as? String) ?? Self.fallbackAesKeySeed,
@@ -89,7 +136,7 @@ public struct YoudaoWebEngine: TranslationEngine {
 
     // MARK: - 第 2 步:翻译
 
-    private func translateChunk(_ text: String, direction: TranslationDirection, session: SessionKey) async throws -> String {
+    private func translateChunk(_ text: String, direction: TranslationDirection, session: SessionKey, retry: Int) async throws -> String {
         let to = direction == .enToZh ? "zh-CHS" : "en"
         let mysticTime = String(Int(Date().timeIntervalSince1970 * 1000))
         let sign = Self.sign(mysticTime: mysticTime, secret: session.secretKey)
@@ -104,28 +151,87 @@ public struct YoudaoWebEngine: TranslationEngine {
         Self.applyBrowserHeaders(&request)
         request.httpBody = body.data(using: .utf8)
 
-        let data = try await perform(request)
-        guard let base64url = String(data: data, encoding: .utf8),
+        let response = try await perform(request, stage: "youdao-translate", direction: direction, characterCount: text.count, retry: retry)
+        guard let base64url = String(data: response.data, encoding: .utf8),
               let plaintext = Self.decryptResponse(base64url, aesKeySeed: session.aesKeySeed, aesIvSeed: session.aesIvSeed),
               let translation = Self.parseTranslation(plaintext) else {
-            throw PDFLabError.engineUnavailable(engineID: id)
+            #if DEBUG
+            await record(stage: "youdao-parse", direction: direction, characterCount: text.count,
+                         status: response.status, retry: retry, error: "decrypt-or-parse",
+                         requestID: response.requestID, started: response.started)
+#endif
+            throw ResponseInvalid()
         }
+#if DEBUG
+        await record(stage: "youdao-translate", direction: direction, characterCount: text.count,
+                     status: response.status, retry: retry, error: nil,
+                     requestID: response.requestID, started: response.started)
+#endif
         return translation
     }
 
     // MARK: - HTTP
 
-    private func perform(_ request: URLRequest) async throws -> Data {
+    private func perform(_ request: URLRequest, stage: String, direction: TranslationDirection,
+                         characterCount: Int, retry: Int) async throws -> HTTPResult {
+        try await limiter.waitTurn()
+#if DEBUG
+        let started = Date(), requestID = UUID()
+#endif
         let (data, resp): (Data, URLResponse)
         do { (data, resp) = try await client.data(for: request) }
-        catch is CancellationError { throw CancellationError() }
-        catch let error as URLError where error.code == .cancelled { throw CancellationError() }
-        catch { throw PDFLabError.networkError(error.localizedDescription) }
-        guard let http = resp as? HTTPURLResponse else { throw PDFLabError.engineUnavailable(engineID: id) }
+        catch is CancellationError {
+#if DEBUG
+            await record(stage: stage, direction: direction, characterCount: characterCount, retry: retry, error: "cancelled", requestID: requestID, started: started)
+#endif
+            throw CancellationError()
+        }
+        catch let error as URLError where error.code == .cancelled {
+#if DEBUG
+            await record(stage: stage, direction: direction, characterCount: characterCount, retry: retry,
+                         error: "cancelled", requestID: requestID, started: started)
+#endif
+            throw CancellationError()
+        }
+        catch {
+#if DEBUG
+            await record(stage: stage, direction: direction, characterCount: characterCount, retry: retry, error: "network", requestID: requestID, started: started)
+#endif
+            throw PDFLabError.networkError(error.localizedDescription)
+        }
+        guard let http = resp as? HTTPURLResponse else {
+#if DEBUG
+            await record(stage: stage, direction: direction, characterCount: characterCount, retry: retry,
+                         error: "invalid-response", requestID: requestID, started: started)
+#endif
+            throw PDFLabError.engineUnavailable(engineID: id)
+        }
+#if DEBUG
+        if !(200..<300).contains(http.statusCode) {
+            await record(stage: stage, direction: direction, characterCount: characterCount, status: http.statusCode,
+                         retry: retry, error: http.statusCode == 429 ? "rate-limited" : "http",
+                         requestID: requestID, started: started)
+        }
+#endif
         if http.statusCode == 429 { throw PDFLabError.engineRateLimited }
         guard (200..<300).contains(http.statusCode) else { throw PDFLabError.engineUnavailable(engineID: id) }
-        return data
+#if DEBUG
+        return HTTPResult(data: data, requestID: requestID, started: started, status: http.statusCode)
+#else
+        return HTTPResult(data: data)
+#endif
     }
+
+#if DEBUG
+    private func record(stage: String, direction: TranslationDirection, characterCount: Int, status: Int? = nil,
+                        retry: Int, error: String?, requestID: UUID = UUID(), started: Date = Date()) async {
+        let context = TranslationDiagnosticScope.current ?? .init(runID: UUID())
+        await diagnostics.record(.init(runID: context.runID, requestID: requestID, engine: id, stage: stage,
+            direction: direction, batch: context.batch, pageStart: context.pageStart, pageEnd: context.pageEnd,
+            characterCount: characterCount, durationMilliseconds: Int(Date().timeIntervalSince(started) * 1000),
+            httpStatus: status, retryCount: retry, errorCategory: error))
+    }
+#endif
 
     /// 两个端点共用的固定字段。
     static func generalFields(keyid: String, sign: String, mysticTime: String) -> [(String, String)] {

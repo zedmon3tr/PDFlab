@@ -16,9 +16,17 @@ struct SettingsView: View {
     @ObservedObject private var updater = UpdateController.shared
 
     // 秘密凭据只走 Keychain;本地 @State 仅作输入缓冲。
-    @State private var llmAPIKey: String = ""
+    @State private var openAIAPIKey: String = ""
+    @State private var claudeAPIKey: String = ""
+    @State private var deepSeekAPIKey: String = ""
+    @State private var selectedServiceID: String = TranslationEngineDescriptor.defaultID
 
     @State private var testState: TestState = .idle
+    @State private var testEpoch = ConnectionTestEpoch()
+    @State private var testTask: Task<Void, Never>?
+    @State private var rollingBackOpenAISecret = false
+    @State private var rollingBackClaudeSecret = false
+    @State private var rollingBackDeepSeekSecret = false
     @State private var pendingCloudEngineID: String?
 
     var body: some View {
@@ -62,7 +70,13 @@ struct SettingsView: View {
             .padding(.vertical, 12)
         }
         .frame(width: 760, height: 560)
-        .onAppear(perform: loadSecrets)
+        .onAppear {
+            app.normalizeEngineSelection()
+            app.normalizeProviderSettings()
+            selectedServiceID = app.resolvedEngineID
+            loadSecrets()
+        }
+        .onDisappear { invalidateConnectionTest() }
         .alert(
             L10n.t("privacy.cloudNotice.title"),
             isPresented: Binding(
@@ -74,7 +88,7 @@ struct SettingsView: View {
                 if let id = pendingCloudEngineID {
                     app.cloudNoticeAcknowledged = true
                     app.engineID = id
-                    testState = .idle
+                    invalidateConnectionTest()
                 }
                 pendingCloudEngineID = nil
             }
@@ -289,48 +303,53 @@ struct SettingsView: View {
     /// 引擎切换拦截:首次选中云端引擎时先弹隐私确认,确认后才真正切换。
     private var engineSelection: Binding<String> {
         Binding(
-            get: { app.engineID },
+            get: { app.resolvedEngineID },
             set: { newValue in
-                guard newValue != app.engineID else { return }
+                guard newValue != app.resolvedEngineID else { return }
                 if AppState.cloudEngineIDs.contains(newValue), !app.cloudNoticeAcknowledged {
                     pendingCloudEngineID = newValue
                 } else {
                     app.engineID = newValue
-                    testState = .idle
+                    invalidateConnectionTest()
                 }
             }
         )
     }
 
     private func serviceRow(_ service: TranslationEngineDescriptor) -> some View {
-        let isCurrent = app.engineID == service.id
+        let isCurrent = app.resolvedEngineID == service.id
+        let isSelected = selectedServiceID == service.id
 
         return Button {
-            engineSelection.wrappedValue = service.id
+            selectedServiceID = service.id
+            invalidateConnectionTest()
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: service.systemImage)
                     .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(isCurrent ? AnyShapeStyle(Color(nsColor: .alternateSelectedControlTextColor)) : AnyShapeStyle(.secondary))
+                    .foregroundStyle(isSelected ? AnyShapeStyle(Color(nsColor: .alternateSelectedControlTextColor)) : AnyShapeStyle(.secondary))
                     .frame(width: 18)
 
                 Text(L10n.t("engine.\(service.id)"))
                     .font(.callout.weight(.medium))
-                    .foregroundStyle(isCurrent ? AnyShapeStyle(Color(nsColor: .alternateSelectedControlTextColor)) : AnyShapeStyle(.primary))
                     .lineLimit(1)
+                .foregroundStyle(isSelected ? AnyShapeStyle(Color(nsColor: .alternateSelectedControlTextColor)) : AnyShapeStyle(.primary))
 
                 Spacer(minLength: 8)
 
-                if let badge = service.enabledBadge(isCurrent: isCurrent) {
-                    Text(badge)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(isCurrent ? AnyShapeStyle(Color(nsColor: .alternateSelectedControlTextColor)) : AnyShapeStyle(.secondary))
+                if isCurrent {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.caption)
+                        .accessibilityLabel(L10n.t("settings.service.enabled"))
+                }
+
+                ForEach(service.statusBadgeKeys, id: \.self) { key in
+                    Text(L10n.t(key))
+                        .font(.caption2.weight(.semibold))
                         .padding(.horizontal, 6)
-                        .padding(.vertical, 4)
-                        .background(
-                            Capsule()
-                                .fill(isCurrent ? Color(nsColor: .alternateSelectedControlTextColor).opacity(0.18) : Color.secondary.opacity(0.12))
-                        )
+                        .padding(.vertical, 3)
+                        .foregroundStyle(isSelected ? Color(nsColor: .alternateSelectedControlTextColor) : .secondary)
+                        .background(Capsule().fill(isSelected ? Color.white.opacity(0.18) : Color.secondary.opacity(0.12)))
                 }
             }
             .padding(.horizontal, 8)
@@ -338,24 +357,40 @@ struct SettingsView: View {
             .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 6)
-                    .fill(isCurrent ? Color(nsColor: .selectedContentBackgroundColor) : Color.clear)
+                    .fill(isSelected ? Color(nsColor: .selectedContentBackgroundColor) : Color.clear)
             )
         }
         .buttonStyle(.plain)
-        .help(L10n.t("engine.\(service.id)"))
+        .help(serviceHelp(service))
     }
 
     private var serviceDetail: some View {
-        let service = TranslationEngineDescriptor.availableOnCurrentOS.first { $0.id == app.engineID }
+        let service = TranslationEngineDescriptor.availableOnCurrentOS.first { $0.id == selectedServiceID }
             ?? TranslationEngineDescriptor.descriptor(for: TranslationEngineDescriptor.defaultID)
             ?? TranslationEngineDescriptor.all[0]
 
         return Group {
-            switch service.configuration {
-            case .none:
+            switch service.id {
+            case "openai":
+                providerServicePanel(service, baseURL: $app.openAIBaseURL, model: $app.openAIModel,
+                    models: OpenAIConfig.models, apiKey: $openAIAPIKey,
+                    keychainKey: AppState.keychainOpenAIAPIKey, rollback: $rollingBackOpenAISecret) {
+                        try await OpenAIEngine(config: OpenAIConfig(baseURL: app.openAIBaseURL, model: app.openAIModel), apiKey: openAIAPIKey).testConnection()
+                    }
+            case "claude":
+                providerServicePanel(service, baseURL: $app.claudeBaseURL, model: $app.claudeModel,
+                    models: ClaudeConfig.models, apiKey: $claudeAPIKey,
+                    keychainKey: AppState.keychainClaudeAPIKey, rollback: $rollingBackClaudeSecret) {
+                        try await ClaudeEngine(config: ClaudeConfig(baseURL: app.claudeBaseURL, model: app.claudeModel), apiKey: claudeAPIKey).testConnection()
+                    }
+            case "deepseek":
+                providerServicePanel(service, baseURL: $app.deepSeekBaseURL, model: $app.deepSeekModel,
+                    models: DeepSeekConfig.models, apiKey: $deepSeekAPIKey,
+                    keychainKey: AppState.keychainDeepSeekAPIKey, rollback: $rollingBackDeepSeekSecret) {
+                        try await DeepSeekEngine(config: DeepSeekConfig(baseURL: app.deepSeekBaseURL, model: app.deepSeekModel), apiKey: deepSeekAPIKey).testConnection()
+                    }
+            default:
                 serviceEmptyState(service)
-            case .apiKey:
-                llmServicePanel(service)
             }
         }
     }
@@ -368,11 +403,33 @@ struct SettingsView: View {
             Text(String(format: L10n.t("settings.service.noConfiguration"), L10n.t("engine.\(service.id)")))
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(.secondary)
+            if service.isUnofficial {
+                Text(L10n.t("engine.unofficialBadge"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            if let advisoryKey = service.advisoryKey {
+                Text(L10n.t(advisoryKey))
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+            }
+            enableButton(service)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func llmServicePanel(_ service: TranslationEngineDescriptor) -> some View {
+    private func serviceHelp(_ service: TranslationEngineDescriptor) -> String {
+        var parts = [L10n.t("engine.\(service.id)")]
+        if service.isUnofficial { parts.append(L10n.t("engine.unofficialBadge")) }
+        if let advisoryKey = service.advisoryKey { parts.append(L10n.t(advisoryKey)) }
+        return parts.joined(separator: " — ")
+    }
+
+    private func providerServicePanel(_ service: TranslationEngineDescriptor, baseURL: Binding<String>,
+                                      model: Binding<String>, models: [String], apiKey: Binding<String>,
+                                      keychainKey: String, rollback: Binding<Bool>,
+                                      test: @escaping () async throws -> Void) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 10) {
                 Image(systemName: service.systemImage)
@@ -383,45 +440,66 @@ struct SettingsView: View {
             }
 
             Form {
-                llmFields
+                TextField(L10n.t("settings.provider.baseURL"), text: baseURL,
+                          prompt: Text(L10n.t("settings.provider.baseURL.placeholder")))
+                    .onChange(of: baseURL.wrappedValue) { _, _ in invalidateConnectionTest() }
+                    .onSubmit {
+                        if let normalized = try? ProviderBaseURL.normalize(baseURL.wrappedValue) {
+                            baseURL.wrappedValue = normalized
+                        } else {
+                            testState = .failure(L10n.t("error.providerBaseURLInvalid"))
+                        }
+                    }
+                SecureField(L10n.t("settings.provider.apiKey"), text: apiKey,
+                            prompt: Text(L10n.t("settings.provider.apiKey.placeholder")))
+                    .onChange(of: apiKey.wrappedValue) { _, value in
+                        if rollback.wrappedValue { rollback.wrappedValue = false; return }
+                        invalidateConnectionTest()
+                        if !persistSecret(value, key: keychainKey) {
+                            rollback.wrappedValue = true
+                            apiKey.wrappedValue = KeychainStore.load(key: keychainKey) ?? ""
+                        }
+                    }
+                Picker(L10n.t("settings.provider.model"), selection: model) {
+                    ForEach(models, id: \.self) { Text($0).tag($0) }
+                }
+                .onChange(of: model.wrappedValue) { _, _ in invalidateConnectionTest() }
+                testConnectionRow(test)
             }
             .formStyle(.grouped)
             .scrollDisabled(true)
 
             Spacer(minLength: 0)
+            enableButton(service)
         }
         .padding(28)
     }
 
-    private var llmFields: some View {
-        Group {
-            TextField(L10n.t("settings.llm.baseURL"), text: $app.llmBaseURL, prompt: Text(verbatim: "https://api.example.com/v1"))
-            TextField(L10n.t("settings.llm.model"), text: $app.llmModel)
-            SecureField(L10n.t("settings.llm.apiKey"), text: $llmAPIKey)
-                .onChange(of: llmAPIKey) { _, newValue in
-                    persistSecret(newValue, key: AppState.keychainLLMAPIKey)
-                }
-            testConnectionRow {
-                let engine = OpenAICompatEngine(
-                    config: LLMConfig(baseURL: app.llmBaseURL, model: app.llmModel),
-                    apiKey: llmAPIKey
-                )
-                try await engine.testConnection()
-            }
+    private func enableButton(_ service: TranslationEngineDescriptor) -> some View {
+        Button(app.resolvedEngineID == service.id ? L10n.t("settings.service.enabled") : L10n.t("settings.service.enable")) {
+            engineSelection.wrappedValue = service.id
         }
+        .buttonStyle(.borderedProminent)
+        .disabled(app.resolvedEngineID == service.id)
+        .accessibilityHint(app.resolvedEngineID == service.id ? "" : L10n.t("settings.service.enable.hint"))
     }
 
     private func testConnectionRow(_ test: @escaping () async throws -> Void) -> some View {
         HStack {
             Button(L10n.t("settings.testConnection")) {
+                invalidateConnectionTest()
                 testState = .testing
-                Task {
+                let generation = testEpoch.value
+                testTask = Task {
                     do {
                         try await test()
+                        guard !Task.isCancelled, testEpoch.accepts(generation) else { return }
                         testState = .success
                     } catch let error as PDFLabError {
+                        guard !Task.isCancelled, testEpoch.accepts(generation) else { return }
                         testState = .failure(L10n.message(for: error))
                     } catch {
+                        guard !Task.isCancelled, testEpoch.accepts(generation) else { return }
                         testState = .failure(error.localizedDescription)
                     }
                 }
@@ -463,16 +541,43 @@ struct SettingsView: View {
     // MARK: - Keychain
 
     private func loadSecrets() {
-        llmAPIKey = KeychainStore.load(key: AppState.keychainLLMAPIKey) ?? ""
+        openAIAPIKey = KeychainStore.load(key: AppState.keychainOpenAIAPIKey) ?? ""
+        claudeAPIKey = KeychainStore.load(key: AppState.keychainClaudeAPIKey) ?? ""
+        deepSeekAPIKey = KeychainStore.load(key: AppState.keychainDeepSeekAPIKey) ?? ""
     }
 
-    private func persistSecret(_ value: String, key: String) {
-        if value.isEmpty {
-            KeychainStore.delete(key: key)
-        } else {
-            try? KeychainStore.save(key: key, value: value)
+    @discardableResult
+    private func persistSecret(_ value: String, key: String) -> Bool {
+        let saved = SecretPersistence.persist(value,
+            save: { try KeychainStore.save(key: key, value: $0) },
+            delete: { try KeychainStore.delete(key: key) })
+        if !saved {
+            testState = .failure(L10n.t("error.keychainSaveFailed"))
         }
+        return saved
     }
+
+    private func invalidateConnectionTest() {
+        testEpoch.invalidate()
+        testTask?.cancel()
+        testTask = nil
+        testState = .idle
+    }
+}
+
+enum SecretPersistence {
+    static func persist(_ value: String, save: (String) throws -> Void, delete: () throws -> Void) -> Bool {
+        if value.isEmpty {
+            do { try delete(); return true } catch { return false }
+        }
+        do { try save(value); return true } catch { return false }
+    }
+}
+
+struct ConnectionTestEpoch: Equatable {
+    private(set) var value = 0
+    mutating func invalidate() { value += 1 }
+    func accepts(_ candidate: Int) -> Bool { candidate == value }
 }
 
 enum AboutLogoPresentation {

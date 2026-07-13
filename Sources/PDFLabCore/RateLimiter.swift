@@ -97,6 +97,9 @@ public actor RateLimiter {
         lifecycle.removeValue(forKey: waiter.id)
         if succeeded {
             lastFire = clock.now
+#if DEBUG
+            _debugGrantedTurnCount += 1
+#endif
             waiter.continuation.resume()
         } else {
             waiter.continuation.resume(throwing: CancellationError())
@@ -106,5 +109,10 @@ public actor RateLimiter {
 
 #if DEBUG
     func debugLifecycleCount() -> Int { lifecycle.count }
+    private(set) var debugGrantedTurnCount: Int {
+        get { _debugGrantedTurnCount }
+        set { _debugGrantedTurnCount = newValue }
+    }
+    private var _debugGrantedTurnCount: Int = 0
 #endif
 }
