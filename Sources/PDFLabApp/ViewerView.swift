@@ -254,16 +254,19 @@ struct ViewerView: View {
             controlBarIconButton("chevron.left", labelKey: "viewer.pagePrevious") {
                 session.stepPage(by: -1)
             }
+            .disabled(!session.canStepPageBackward)
             if !isSideBySide, let side = session.currentSingleSide {
                 let state = session.pageState(for: side)
                 Text("\(state.pageIndex + 1) / \(max(state.pageCount, 1))")
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(minWidth: 64)
+                    .accessibilityValue(Text("\(state.pageIndex + 1) / \(max(state.pageCount, 1))"))
             }
             controlBarIconButton("chevron.right", labelKey: "viewer.pageNext") {
                 session.stepPage(by: 1)
             }
+            .disabled(!session.canStepPageForward)
         }
     }
 }

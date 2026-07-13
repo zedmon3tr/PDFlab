@@ -139,6 +139,29 @@ final class ViewerSession: ObservableObject {
         }
     }
 
+    /// 翻页按钮边界判定所用的当前相关页状态:逐页对照以主侧为准
+    /// (副侧被动跟随,不单独判定边界);否则单看用聚焦侧。
+    private var relevantPageStateForStepping: SidePageState? {
+        if isPagedComparisonActive {
+            return primaryPage
+        }
+        if let side = currentSingleSide {
+            return pageState(for: side)
+        }
+        return nil
+    }
+
+    /// pageCount 为 0(尚无页信息)时视为不可翻,两个方向都禁用。
+    var canStepPageBackward: Bool {
+        guard let state = relevantPageStateForStepping, state.pageCount > 0 else { return false }
+        return state.pageIndex > 0
+    }
+
+    var canStepPageForward: Bool {
+        guard let state = relevantPageStateForStepping, state.pageCount > 0 else { return false }
+        return state.pageIndex < state.pageCount - 1
+    }
+
     /// 微调:用两侧当前 1 计页码建立锚点偏移。任一侧非法(非数字/越界)返回 false 且不改状态。
     /// 只记录 secondaryIndex − primaryIndex 的关系,不强制两侧跳转——用户已经手动对齐到
     /// 这两页才会点“建立锚点”,不应该反过来打断当前查看位置。
@@ -439,6 +462,9 @@ final class ViewerSession: ObservableObject {
         secondary = nil
         layout = .single(.primary)
         resetRatios()
+        primaryPage = SidePageState()
+        secondaryPage = SidePageState()
+        pageLinkOffset = 0
         load(source, side: .primary)
         load(output, side: .secondary)
         if primary != nil && secondary != nil {

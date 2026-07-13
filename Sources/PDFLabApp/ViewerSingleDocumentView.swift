@@ -281,10 +281,17 @@ struct SinglePDFView: NSViewRepresentable {
             }
         }
 
-        /// 程序化改缩放的统一入口:挂起回显 → 执行 → 恢复,防自触发回环。
+        /// 程序化改缩放/换文档的统一入口:挂起回显 → 执行 → 恢复,防自触发回环。
+        /// 同时挂起页观察者——文档替换期间 PDFKit 可能先上报旧 pageCount 下的临时
+        /// (0, newCount) 瞬时状态,须等 `scheduleEchoOfCurrentPage` 在下一 runloop
+        /// 补报真实值,而不是把这个瞬时值写进 session。
         func suspendingEcho(_ body: (Coordinator) -> Void) {
             scaleObserver.isSuspended = true
-            defer { scaleObserver.isSuspended = false }
+            pageObserver.isSuspended = true
+            defer {
+                scaleObserver.isSuspended = false
+                pageObserver.isSuspended = false
+            }
             body(self)
         }
 
