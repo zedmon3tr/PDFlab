@@ -1,10 +1,11 @@
 import AppKit
 import PDFKit
 
-/// 单 PDF 预览模式:双页并排 / 连续滚动(默认)。
+/// 单 PDF 预览模式:双页并排 / 连续滚动(默认)/ 逐页。
 enum ViewerReadingLayout: String, CaseIterable, Identifiable {
     case twoPage
     case continuous
+    case paged
 
     static let defaultLayout: ViewerReadingLayout = .continuous
 
@@ -16,6 +17,8 @@ enum ViewerReadingLayout: String, CaseIterable, Identifiable {
             return "viewer.layoutTwoPage"
         case .continuous:
             return "viewer.layoutContinuous"
+        case .paged:
+            return "viewer.layoutPaged"
         }
     }
 
@@ -25,6 +28,8 @@ enum ViewerReadingLayout: String, CaseIterable, Identifiable {
             return "book.pages"
         case .continuous:
             return "scroll"
+        case .paged:
+            return "doc.text"
         }
     }
 
@@ -34,6 +39,8 @@ enum ViewerReadingLayout: String, CaseIterable, Identifiable {
             return .twoUpContinuous
         case .continuous:
             return .singlePageContinuous
+        case .paged:
+            return .singlePage
         }
     }
 
