@@ -152,10 +152,17 @@ final class ViewerSession: ObservableObject {
 
     /// PDFView 页回显(命令施加以外的任何来源)。主侧变化时在逐页对照下驱动副侧跟随
     /// (单向:副侧命令不会再产生主侧回显,不成环);副侧回显只更新显示。
+    /// 命令存在时把 pageIndex 原位同步进去(不前进 revision)——活跃视图因 revision
+    /// 相同不会重放,但该侧 PDFView 拆掉重建(切标签回来)时能重放出观察到的真实页码,
+    /// 而不是命令签发时的旧页(PDF 内链点击、PDFKit 原生 Space/PageUp/PageDown 等非命令
+    /// 来源的翻页都会走到这里)。与 `noteObservedZoomScale` 同一套约定。
     func noteObservedPage(index: Int, pageCount: Int, on side: ViewerSide) {
         modifyPageState(on: side) { state in
             state.pageCount = pageCount
             state.pageIndex = ViewerPageNavigation.clampedIndex(index, pageCount: pageCount)
+            if state.command != nil {
+                state.command?.pageIndex = state.pageIndex
+            }
         }
         if side == .primary, isPagedComparisonActive {
             issuePageCommand(

@@ -63,6 +63,7 @@ final class ViewerPagedKeyMonitor: ObservableObject {
         guard monitor == nil else { return }
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self,
+                  Self.isEligibleWindow(event.window),
                   self.shouldConsume(
                     keyCode: event.keyCode,
                     isEditingText: Self.isEditingText(in: event.window)
@@ -81,6 +82,13 @@ final class ViewerPagedKeyMonitor: ObservableObject {
         guard !isEditingText,
               let delta = ViewerPageNavigation.pageDelta(forKeyCode: keyCode) else { return false }
         return handler?(delta) ?? false
+    }
+
+    /// 只在普通前台窗口消费方向键:sheet 自身或挂着 sheet 的窗口一律放行,
+    /// 避免设置等面板打开时方向键翻动背后的 PDF。
+    static func isEligibleWindow(_ window: NSWindow?) -> Bool {
+        guard let window else { return false }
+        return !window.isSheet && window.attachedSheet == nil
     }
 
     private static func isEditingText(in window: NSWindow?) -> Bool {
