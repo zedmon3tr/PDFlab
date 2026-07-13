@@ -160,3 +160,9 @@ final class PDFScaleEchoObserver {
         onScale?(scale)
     }
 }
+
+/// 一次翻页命令:与 ViewerZoomCommand 同构(revision 幂等施加,重建视图时重放恢复页码)。
+struct ViewerPageCommand: Equatable {
+    var pageIndex: Int
+    var revision: Int
+}

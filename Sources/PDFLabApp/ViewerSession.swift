@@ -34,6 +34,13 @@ struct SideZoomState: Equatable {
     var command: ViewerZoomCommand?
 }
 
+/// 每侧独立的会话内页码状态(逐页查看用;挂后台保留,重开 app 重置——只活在常驻 session)。
+struct SidePageState: Equatable {
+    var pageIndex: Int = 0
+    var pageCount: Int = 0
+    var command: ViewerPageCommand?
+}
+
 /// 常驻查看会话(浏览器 tab 语义):文档标签与对照布局状态与查看器视图解耦。
 /// 返回首页不销毁——标签继续显示在标题栏,点标签回到查看器时滚动/缩放原样保留;
 /// 关掉全部标签才回到纯首页。
@@ -60,6 +67,130 @@ final class ViewerSession: ObservableObject {
     /// 只有装入/替换该侧文档才重置为默认实际大小 100%。
     @Published private(set) var primaryZoom = SideZoomState()
     @Published private(set) var secondaryZoom = SideZoomState()
+
+    // MARK: - 逐页查看状态(页码 + 翻页命令 + 锚点偏移)
+
+    /// 每侧独立页码记忆:文档挂后台仍保留,只有装入/替换该侧文档才重置。
+    @Published private(set) var primaryPage = SidePageState()
+    @Published private(set) var secondaryPage = SidePageState()
+    /// 微调锚点偏移:secondaryIndex − primaryIndex(0 计)。仅双 PDF 逐页对照使用。
+    @Published private(set) var pageLinkOffset = 0
+
+    #if DEBUG
+    /// 仅测试:`layoutForTesting(.sideBySide)` 时置 true,让 `isPagedComparisonActive`
+    /// 在没有真实 secondary 文档(`effectiveLayout` 退回 single)的情况下仍判定为对照中,
+    /// 从而无需加载真实 PDF 就能测翻页联动数学。
+    private var testingForcesComparison = false
+    #endif
+
+    /// 逐页对照是否生效:sideBySide 布局 + 逐页阅读模式。
+    var isPagedComparisonActive: Bool {
+        guard readingLayout == .paged else { return false }
+        if case .sideBySide = layout {
+            #if DEBUG
+            if testingForcesComparison { return true }
+            #endif
+            return effectiveLayout == .sideBySide
+        }
+        return false
+    }
+
+    /// 单看 PDF 且处于逐页阅读模式。
+    var isPagedSingleActive: Bool {
+        readingLayout == .paged && currentSingleDocument?.kind == .pdf
+    }
+
+    func pageState(for side: ViewerSide) -> SidePageState {
+        side == .primary ? primaryPage : secondaryPage
+    }
+
+    private func modifyPageState(on side: ViewerSide, _ body: (inout SidePageState) -> Void) {
+        switch side {
+        case .primary: body(&primaryPage)
+        case .secondary: body(&secondaryPage)
+        }
+    }
+
+    private func issuePageCommand(_ index: Int, on side: ViewerSide) {
+        modifyPageState(on: side) { state in
+            state.pageIndex = ViewerPageNavigation.clampedIndex(index, pageCount: state.pageCount)
+            state.command = ViewerPageCommand(
+                pageIndex: state.pageIndex,
+                revision: (state.command?.revision ?? 0) + 1
+            )
+        }
+    }
+
+    /// 翻页(按钮/方向键共用):单看只动聚焦侧;逐页对照两侧按锚点偏移联动。
+    func stepPage(by delta: Int) {
+        if isPagedComparisonActive {
+            let next = ViewerPageNavigation.steppedIndex(
+                from: primaryPage.pageIndex, by: delta, pageCount: primaryPage.pageCount)
+            issuePageCommand(next, on: .primary)
+            issuePageCommand(
+                ViewerPageNavigation.linkedIndex(
+                    sourceIndex: next, offset: pageLinkOffset, targetPageCount: secondaryPage.pageCount),
+                on: .secondary)
+        } else if let side = currentSingleSide {
+            let state = pageState(for: side)
+            issuePageCommand(
+                ViewerPageNavigation.steppedIndex(from: state.pageIndex, by: delta, pageCount: state.pageCount),
+                on: side)
+        }
+    }
+
+    /// 微调:用两侧当前 1 计页码建立锚点偏移。任一侧非法(非数字/越界)返回 false 且不改状态。
+    /// 只记录 secondaryIndex − primaryIndex 的关系,不强制两侧跳转——用户已经手动对齐到
+    /// 这两页才会点“建立锚点”,不应该反过来打断当前查看位置。
+    func applyPageAnchor(primaryText: String, secondaryText: String) -> Bool {
+        guard let primaryIndex = ViewerPageNavigation.pageIndex(fromDisplayText: primaryText, pageCount: primaryPage.pageCount),
+              let secondaryIndex = ViewerPageNavigation.pageIndex(fromDisplayText: secondaryText, pageCount: secondaryPage.pageCount)
+        else { return false }
+        pageLinkOffset = secondaryIndex - primaryIndex
+        return true
+    }
+
+    /// PDFView 页回显(命令施加以外的任何来源)。主侧变化时在逐页对照下驱动副侧跟随
+    /// (单向:副侧命令不会再产生主侧回显,不成环);副侧回显只更新显示。
+    func noteObservedPage(index: Int, pageCount: Int, on side: ViewerSide) {
+        modifyPageState(on: side) { state in
+            state.pageCount = pageCount
+            state.pageIndex = ViewerPageNavigation.clampedIndex(index, pageCount: pageCount)
+        }
+        if side == .primary, isPagedComparisonActive {
+            issuePageCommand(
+                ViewerPageNavigation.linkedIndex(
+                    sourceIndex: primaryPage.pageIndex, offset: pageLinkOffset, targetPageCount: secondaryPage.pageCount),
+                on: .secondary)
+        }
+    }
+
+    /// 进入逐页对照(切模式/进并排)时把副侧对齐到 主侧 + 偏移。
+    func realignLinkedPages() {
+        guard isPagedComparisonActive else { return }
+        issuePageCommand(
+            ViewerPageNavigation.linkedIndex(
+                sourceIndex: primaryPage.pageIndex, offset: pageLinkOffset, targetPageCount: secondaryPage.pageCount),
+            on: .secondary)
+    }
+
+    #if DEBUG
+    /// 仅测试:注入页数,免加载真实 PDF。
+    func setPageCountForTesting(_ count: Int, on side: ViewerSide) {
+        modifyPageState(on: side) { $0.pageCount = count }
+    }
+
+    /// 仅测试:注入布局(含 sideBySide),配合 `testingForcesComparison` 让逐页对照联动
+    /// 数学可测,免加载真实第二文档。
+    func layoutForTesting(_ layout: ViewerLayout) {
+        self.layout = layout
+        if case .sideBySide = layout {
+            testingForcesComparison = true
+        } else {
+            testingForcesComparison = false
+        }
+    }
+    #endif
 
     /// 当前单看侧(sideBySide 时 nil):控制条读写与 PDFView 回显路由的唯一依据。
     var currentSingleSide: ViewerSide? {
@@ -243,9 +374,17 @@ final class ViewerSession: ObservableObject {
         case .secondary:
             secondary = nil
             secondaryZoom = SideZoomState()
+            secondaryPage = SidePageState()
+            pageLinkOffset = 0
             layout = .single(.primary)
             resetRatios()
         case .primary:
+            // 页状态迁移与文档/缩放晋升解耦:不依赖 `secondary` 是否有真实文档
+            // ——没有真实副文档时 secondaryPage 本就是默认值,这里的赋值等价于重置,
+            // 与"关最后一个标签"分支的目标状态一致,同时让页状态可以脱离真实 PDF 单独测试。
+            primaryPage = secondaryPage
+            secondaryPage = SidePageState()
+            pageLinkOffset = 0
             if let promoted = secondary {
                 primary = promoted
                 secondary = nil
@@ -332,8 +471,8 @@ final class ViewerSession: ObservableObject {
             recordOpen(url, side: side)
         case .pdf:
             do {
-                _ = try PDFTextExtractor.openDocument(at: url, password: password)
-                assign(ViewerDocument(url: url, kind: .pdf, password: password), side: side)
+                let document = try PDFTextExtractor.openDocument(at: url, password: password)
+                assign(ViewerDocument(url: url, kind: .pdf, password: password), side: side, pageCount: document.pageCount)
                 passwordFailure = nil
                 recordOpen(url, side: side)
             } catch PDFLabError.encryptedPDFWrongPassword {
@@ -359,7 +498,7 @@ final class ViewerSession: ObservableObject {
         onRecordOpen?(url)
     }
 
-    private func assign(_ document: ViewerDocument, side: ViewerSide) {
+    private func assign(_ document: ViewerDocument, side: ViewerSide, pageCount: Int = 0) {
         switch side {
         case .primary:
             primary = document
@@ -371,6 +510,15 @@ final class ViewerSession: ObservableObject {
         }
         // 每次成功装入/替换文档只重置该侧缩放为默认实际大小 100%。
         resetZoom(on: side)
+        // 每次成功装入/替换文档只重置该侧页状态;副侧另需清掉锚点偏移
+        // (旧偏移是相对旧文档的,换文档后不再有意义)。
+        switch side {
+        case .primary:
+            primaryPage = SidePageState(pageCount: pageCount)
+        case .secondary:
+            secondaryPage = SidePageState(pageCount: pageCount)
+            pageLinkOffset = 0
+        }
         // 任何成功装入的文档都把查看器前置(含密码解锁后)。
         isViewerVisible = true
     }
