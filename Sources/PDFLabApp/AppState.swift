@@ -191,8 +191,8 @@ final class AppState: ObservableObject {
     /// - apple 注入 `AppleTranslationHost.shared`(macOS 15 的 .translationTask 宿主);
     /// - OpenAI/Claude/DeepSeek 从各自 Keychain 键取凭据,缺失时由引擎明确报错;
     /// - google/deepl/youdao 为免 Key 非官方引擎,零配置。
-    func makeEngine() -> TranslationEngine {
-        Self.makeEngineFromDefaults()
+    func makeEngine(engineID: String? = nil) -> TranslationEngine {
+        Self.makeEngineFromDefaults(overridingEngineID: engineID)
     }
 
     /// 引擎实例缓存,见 `EngineCache`:跨调用复用,使内部 `RateLimiter` 真正生效。
@@ -206,10 +206,10 @@ final class AppState: ObservableObject {
     /// 与上次不同时才真正构造新引擎;否则复用 `engineCache` 里的实例——同一引擎实例
     /// 意味着同一个内部 `RateLimiter`,跨调用真正限速,而不是每次都得到一个
     /// `lastFire = .distantPast` 的新限速器。
-    nonisolated static func makeEngineFromDefaults() -> TranslationEngine {
+    nonisolated static func makeEngineFromDefaults(overridingEngineID: String? = nil) -> TranslationEngine {
         let defaults = UserDefaults.standard
         let engineID = TranslationEngineDescriptor.resolvedEngineID(
-            defaults.string(forKey: StorageKey.engineID),
+            overridingEngineID ?? defaults.string(forKey: StorageKey.engineID),
             availableIDs: TranslationEngineDescriptor.currentAvailableIDs
         )
         let openAIBaseURL = defaults.string(forKey: StorageKey.openAIBaseURL) ?? OpenAIConfig.defaultBaseURL

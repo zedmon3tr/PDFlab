@@ -306,6 +306,14 @@ struct TranslateFlowView: View {
                     }
                 }
                 settingsDivider
+                settingsRow(title: L10n.t("translate.engine")) {
+                    Picker(L10n.t("translate.engine"), selection: $state.engineID) {
+                        ForEach(TranslationEngineDescriptor.availableOnCurrentOS) { descriptor in
+                            Text(L10n.t("engine.\(descriptor.id)")).tag(descriptor.id)
+                        }
+                    }
+                }
+                settingsDivider
                 settingsRow(title: L10n.t("translate.format")) {
                     Picker(L10n.t("translate.format"), selection: $state.options.format) {
                         Text("Markdown").tag(OutputFormat.markdown)
@@ -537,10 +545,21 @@ struct TranslateFlowView: View {
     private func acceptFile(_ url: URL, password: String?, pageCount: Int = 1) {
         // 需求 3.1:翻译模块导入的文件不进入历史(历史只记查看模块主文件)。
         state.acceptFile(url, password: password, pageCount: pageCount)
+        state.engineID = app.resolvedEngineID
     }
 
     private func startPipeline() {
         guard let sourceURL = state.sourceURL else { return }
+        if TranslateEnginePrecheck.hasMissingCredential(
+            engineID: state.engineID,
+            credential: { KeychainStore.load(key: $0) }
+        ) {
+            alert = TranslateAlert(
+                title: L10n.t("translate.failed"),
+                message: L10n.t("translate.engine.missingKey")
+            )
+            return
+        }
         let pageRange: ClosedRange<Int>?
         do {
             pageRange = try TranslationPageRange.parse(state.pageRangeText, totalPages: state.previewPageCount)
@@ -563,7 +582,7 @@ struct TranslateFlowView: View {
             forcedDirection: state.forcedDirection,
             pageRange: pageRange
         )
-        let pipeline = TranslationPipeline(engine: app.makeEngine())
+        let pipeline = TranslationPipeline(engine: app.makeEngine(engineID: state.engineID))
 
         runTask = Task {
             do {

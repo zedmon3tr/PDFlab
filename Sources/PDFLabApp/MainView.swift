@@ -215,18 +215,17 @@ struct MainView: View {
             }
         }
         ToolbarItemGroup {
-            if session.isViewerVisible, session.secondary != nil, session.effectiveLayout == .sideBySide {
+            // 滚动比例只在滚动对照有意义;逐页对照(readingLayout == .paged)由锚点偏移联动,隐藏比例项。
+            if session.isViewerVisible, session.secondary != nil,
+               session.effectiveLayout == .sideBySide,
+               ViewerToolbarPolicy.showsRatioControls(isSideBySide: true, readingLayout: session.readingLayout) {
                 ratioControl(L10n.t("viewer.leftRatio"), value: $session.ratioA)
                 ratioControl(L10n.t("viewer.rightRatio"), value: $session.ratioB)
                 resetRatioButton
             }
         }
-        // 对照浏览:窗口最右,仅查看器前置时出现。
-        ToolbarItemGroup(placement: .primaryAction) {
-            if session.isViewerVisible {
-                sideBySideButton
-            }
-        }
+        // “对照浏览”开关已移入查看器控制条(ViewerView.comparisonToggleControl),
+        // 标题栏不再放该按钮。
     }
 
     private var logoButton: some View {
@@ -240,23 +239,11 @@ struct MainView: View {
                 .scaledToFit()
                 .frame(width: 20, height: 20)
         }
-        // 复用与 "+"/对照浏览等工具栏按钮相同的 HoverButtonStyle,
+        // 复用与 "+" 等工具栏按钮相同的 HoverButtonStyle,
         // 保证 hover/press/focus/disabled/Reduce Motion/增强对比度表现一致。
         .buttonStyle(HoverButtonStyle(variant: .toolbar))
         .accessibilityLabel(L10n.t("app.name"))
         .help(L10n.t("app.name"))
-    }
-
-    private var sideBySideButton: some View {
-        Button {
-            session.layout = .sideBySide
-        } label: {
-            Label(L10n.t("viewer.sideBySide"), systemImage: "rectangle.split.2x1")
-        }
-        .buttonStyle(HoverButtonStyle(variant: .toolbar))
-        .disabled(!session.comparisonEnabled || session.effectiveLayout == .sideBySide)
-        .accessibilityLabel(L10n.t("viewer.sideBySide"))
-        .help(session.comparisonEnabled ? L10n.t("viewer.sideBySide") : L10n.t("viewer.sideBySide.disabled"))
     }
 
     // macOS 工具栏常不渲染 Stepper 的 label,数值必须用独立 Text 显式呈现。
