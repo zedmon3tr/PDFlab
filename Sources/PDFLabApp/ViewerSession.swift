@@ -490,6 +490,13 @@ final class ViewerSession: ObservableObject {
         load(source, side: .primary)
         load(output, side: .secondary)
         if primary != nil && secondary != nil {
+            // `load(output, side: .secondary)` → `assign` set layout = .single(.secondary),
+            // which via the `layout` didSet recorded lastSingleFocus = .secondary. That was
+            // never a genuine user single-view — it's a transient loading artifact of this
+            // replace-and-compare flow. Reset it to .primary (the original document) *after*
+            // that didSet has already fired, so exiting side-by-side later lands on the
+            // original PDF rather than the just-imported translation output.
+            lastSingleFocus = .primary
             layout = .sideBySide
         }
     }
