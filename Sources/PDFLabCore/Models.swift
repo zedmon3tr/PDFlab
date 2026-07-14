@@ -4,7 +4,7 @@
 // 测试文件一律不要直接 import Foundation,经 @testable import PDFLabCore 传递获得。
 @_exported import Foundation
 
-public enum PDFLabCoreInfo { public static let version = "0.1.2" }
+public enum PDFLabCoreInfo { public static let version = "0.1.3" }
 
 /// 一段源文本。pageIndex 从 0 计,是段落起始页(跨页段落归起始页)。
 public struct SourceParagraph: Equatable, Sendable {
