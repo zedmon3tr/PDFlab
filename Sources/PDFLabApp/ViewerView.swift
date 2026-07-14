@@ -235,10 +235,16 @@ struct ViewerView: View {
         Button {
             session.toggleSideBySide()
         } label: {
-            Image(systemName: "rectangle.split.2x1")
-                .font(.system(size: 12, weight: .medium))
+            HStack(spacing: 4) {
+                Image(systemName: "rectangle.split.2x1")
+                    .font(.system(size: 12, weight: .medium))
+                // 文案恒定为「对照浏览」,不随激活态切到 exit 文案——
+                // 激活/退出语义只通过 tonal 高亮 + accessibilityLabel/.help 表达。
+                Text(L10n.t("viewer.sideBySide"))
+                    .font(.callout)
+            }
         }
-        .buttonStyle(ControlBarIconButtonStyle(isActive: isSideBySide))
+        .buttonStyle(ControlBarIconButtonStyle(isActive: isSideBySide, isLabeled: true))
         .disabled(!session.comparisonEnabled)
         .accessibilityLabel(L10n.t(comparisonToggleLabelKey))
         .help(L10n.t(comparisonToggleHelpKey))
@@ -502,6 +508,8 @@ enum ViewerControlBarMetrics {
     static let controlHeight: CGFloat = 28
     /// 图标按钮边长 = 统一控件高度的正方形命中区(≥ DESIGN.md 图标按钮 24×24 下限)。
     static let buttonSize: CGFloat = controlHeight
+    /// 带文字标签的控制条按钮(如「对照浏览」)左右内边距,DESIGN.md 紧凑控件区间 10–12pt。
+    static let labeledButtonHorizontalPadding: CGFloat = 10
     /// 百分比静态文本框宽度。
     static let zoomMenuWidth: CGFloat = 76
     /// 缩放组内元素间距。
@@ -517,6 +525,9 @@ enum ViewerControlBarMetrics {
 /// 三重信号,不只靠颜色(DESIGN.md 选中态)。
 struct ControlBarIconButtonStyle: ButtonStyle {
     var isActive = false
+    /// 图标 + 文字标签变体(如「对照浏览」):放弃固定正方形命中区,改为
+    /// 统一 28pt 高度 + 左右内边距的自然宽度,不影响其余纯图标按钮仍为 28×28 正方形。
+    var isLabeled = false
 
     /// 激活态度量(供测试校验落在 DESIGN.md 克制区间):
     /// fill 明显强于非激活 hover(0.08),描边基值 > 0 保证增强对比度可抬升。
@@ -526,13 +537,14 @@ struct ControlBarIconButtonStyle: ButtonStyle {
     static let activeHoverStrokeOpacity = 0.24
 
     func makeBody(configuration: Configuration) -> some View {
-        ControlBarIconButtonBody(configuration: configuration, isActive: isActive)
+        ControlBarIconButtonBody(configuration: configuration, isActive: isActive, isLabeled: isLabeled)
     }
 }
 
 private struct ControlBarIconButtonBody: View {
     let configuration: ButtonStyle.Configuration
     var isActive = false
+    var isLabeled = false
 
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -565,8 +577,9 @@ private struct ControlBarIconButtonBody: View {
     var body: some View {
         configuration.label
             .foregroundStyle(iconStyle)
+            .padding(.horizontal, isLabeled ? ViewerControlBarMetrics.labeledButtonHorizontalPadding : 0)
             .frame(
-                width: ViewerControlBarMetrics.buttonSize,
+                width: isLabeled ? nil : ViewerControlBarMetrics.buttonSize,
                 height: ViewerControlBarMetrics.buttonSize
             )
             .background(
