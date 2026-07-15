@@ -2,12 +2,19 @@ import PDFKit
 
 public struct PageExtraction: Sendable {
     public var pageIndex: Int
-    public var lines: [TextLine]
+    public var layout: PageLayout
+    public var lines: [TextLine] { layout.flattenedLines }
     public var isScanned: Bool
 
     public init(pageIndex: Int, lines: [TextLine], isScanned: Bool) {
         self.pageIndex = pageIndex
-        self.lines = lines
+        self.layout = PageReadingOrder.layout(lines, pageIndex: pageIndex)
+        self.isScanned = isScanned
+    }
+
+    public init(layout: PageLayout, isScanned: Bool) {
+        self.pageIndex = layout.pageIndex
+        self.layout = layout
         self.isScanned = isScanned
     }
 }
@@ -38,8 +45,7 @@ public enum PDFTextExtractor {
         let pageBounds = page.bounds(for: .mediaBox)
         if let visualLines = visualTextLines(on: page, content: content, pageBounds: pageBounds, pageIndex: pageIndex) {
             return PageExtraction(
-                pageIndex: pageIndex,
-                lines: PageReadingOrder.order(visualLines),
+                layout: PageReadingOrder.layout(visualLines, pageIndex: pageIndex),
                 isScanned: visualLines.isEmpty
             )
         }

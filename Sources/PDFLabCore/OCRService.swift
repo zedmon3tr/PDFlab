@@ -2,6 +2,17 @@ import CoreGraphics
 import Foundation
 import Vision
 
+public struct OCRPageResult: Equatable, Sendable {
+    public var layout: PageLayout
+    public var confidence: Double
+    public var lines: [TextLine] { layout.flattenedLines }
+
+    public init(layout: PageLayout, confidence: Double) {
+        self.layout = layout
+        self.confidence = confidence
+    }
+}
+
 public struct OCRService: Sendable {
     private let languages: [Locale.Language]
     private let legacyLanguageIdentifiers: [String]
@@ -36,7 +47,7 @@ public struct OCRService: Sendable {
         legacyLanguageIdentifiers = selected.map(\.legacyIdentifier)
     }
 
-    public func recognizePage(_ image: CGImage, pageIndex: Int) async throws -> (lines: [TextLine], confidence: Double) {
+    public func recognizePage(_ image: CGImage, pageIndex: Int) async throws -> OCRPageResult {
         let first = try await runOnce(image, pageIndex: pageIndex)
         if first.confidence < 0.5 {
             let retry = try await runOnce(ImagePreprocessor.enhance(image), pageIndex: pageIndex)
@@ -45,7 +56,7 @@ public struct OCRService: Sendable {
         return first
     }
 
-    private func runOnce(_ image: CGImage, pageIndex: Int) async throws -> (lines: [TextLine], confidence: Double) {
+    private func runOnce(_ image: CGImage, pageIndex: Int) async throws -> OCRPageResult {
         if #available(macOS 26.0, *) {
             return try await runDocumentRecognition(image, pageIndex: pageIndex)
         } else {
@@ -54,7 +65,7 @@ public struct OCRService: Sendable {
     }
 
     @available(macOS 26.0, *)
-    private func runDocumentRecognition(_ image: CGImage, pageIndex: Int) async throws -> (lines: [TextLine], confidence: Double) {
+    private func runDocumentRecognition(_ image: CGImage, pageIndex: Int) async throws -> OCRPageResult {
         var request = RecognizeDocumentsRequest()
         request.textRecognitionOptions.recognitionLanguages = languages
         request.textRecognitionOptions.useLanguageCorrection = true
@@ -77,7 +88,11 @@ public struct OCRService: Sendable {
             }
         }
 
-        return normalizedResult(lines)
+        let normalized = Self.normalizeLines(lines)
+        let blocks = normalized.enumerated().map { index, line in
+            LayoutBlock(id: .init("system-p\(pageIndex)-b\(index)"), kind: .paragraph, lines: [line])
+        }
+        return result(layout: Self.systemPageLayout(pageIndex: pageIndex, blocks: blocks))
     }
 
     @available(macOS 26.0, *)
@@ -90,7 +105,7 @@ public struct OCRService: Sendable {
         return sum / Double(paragraph.lines.count)
     }
 
-    private func runTextRecognition(_ image: CGImage, pageIndex: Int) async throws -> (lines: [TextLine], confidence: Double) {
+    private func runTextRecognition(_ image: CGImage, pageIndex: Int) async throws -> OCRPageResult {
         if #available(macOS 15.0, *) {
             return try await runModernTextRecognition(image, pageIndex: pageIndex)
         }
@@ -99,7 +114,7 @@ public struct OCRService: Sendable {
     }
 
     @available(macOS 15.0, *)
-    private func runModernTextRecognition(_ image: CGImage, pageIndex: Int) async throws -> (lines: [TextLine], confidence: Double) {
+    private func runModernTextRecognition(_ image: CGImage, pageIndex: Int) async throws -> OCRPageResult {
         var request = RecognizeTextRequest()
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = true
@@ -119,10 +134,10 @@ public struct OCRService: Sendable {
             ))
         }
 
-        return normalizedResult(lines)
+        return normalizedResult(lines, pageIndex: pageIndex)
     }
 
-    private func runLegacyTextRecognition(_ image: CGImage, pageIndex: Int) async throws -> (lines: [TextLine], confidence: Double) {
+    private func runLegacyTextRecognition(_ image: CGImage, pageIndex: Int) async throws -> OCRPageResult {
         try await withCheckedThrowingContinuation { continuation in
             let request = VNRecognizeTextRequest { request, error in
                 if let error {
@@ -140,7 +155,7 @@ public struct OCRService: Sendable {
                         confidence: Double(candidate.confidence)
                     )
                 }
-                continuation.resume(returning: self.normalizedResult(lines))
+                continuation.resume(returning: self.normalizedResult(lines, pageIndex: pageIndex))
             }
             request.recognitionLevel = .accurate
             request.usesLanguageCorrection = true
@@ -154,19 +169,38 @@ public struct OCRService: Sendable {
         }
     }
 
-    private func normalizedResult(_ lines: [TextLine]) -> (lines: [TextLine], confidence: Double) {
-        let normalized = Self.normalizeReadingOrder(lines)
-        let confidences = normalized.compactMap(\.confidence)
-        return (normalized, confidences.isEmpty ? 0 : confidences.reduce(0, +) / Double(confidences.count))
+    private func normalizedResult(_ lines: [TextLine], pageIndex: Int) -> OCRPageResult {
+        let normalized = Self.normalizeLines(lines)
+        return result(layout: PageReadingOrder.layout(normalized, pageIndex: pageIndex))
+    }
+
+    private func result(layout: PageLayout) -> OCRPageResult {
+        let confidences = layout.flattenedLines.compactMap(\.confidence)
+        return OCRPageResult(
+            layout: layout,
+            confidence: confidences.isEmpty ? 0 : confidences.reduce(0, +) / Double(confidences.count)
+        )
+    }
+
+    public static func systemPageLayout(pageIndex: Int, blocks: [LayoutBlock]) -> PageLayout {
+        guard !blocks.isEmpty else { return PageLayout(pageIndex: pageIndex, regions: []) }
+        return PageLayout(pageIndex: pageIndex, regions: [
+            LayoutRegion(id: "system-p\(pageIndex)-r0", kind: .body, source: .system, blocks: blocks)
+        ])
     }
 
     static func normalizeReadingOrder(_ lines: [TextLine]) -> [TextLine] {
+        let cleaned = normalizeLines(lines)
+        let pages = Dictionary(grouping: cleaned, by: \.pageIndex)
+        return pages.keys.sorted().flatMap { PageReadingOrder.order(pages[$0] ?? []) }
+    }
+
+    private static func normalizeLines(_ lines: [TextLine]) -> [TextLine] {
         let cleaned: [TextLine] = lines.compactMap { line in
             let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return nil }
             return TextLine(text: text, pageIndex: line.pageIndex, bbox: line.bbox, confidence: line.confidence)
         }
-        let pages = Dictionary(grouping: cleaned, by: \.pageIndex)
-        return pages.keys.sorted().flatMap { PageReadingOrder.order(pages[$0] ?? []) }
+        return cleaned
     }
 }

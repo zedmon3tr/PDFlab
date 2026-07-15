@@ -102,7 +102,7 @@ public final class TranslationPipeline: @unchecked Sendable {
     /// 结果(仅当其识别所用优先级即最终优先级时保留,供主循环复用)。
     private struct OCRPriority {
         var language: OCRLanguage
-        var probedPage: (pageIndex: Int, lines: [TextLine], confidence: Double)?
+        var probedPage: OCRPageResult?
     }
 
     /// 决定 OCR 语言优先级(需求 3.4:中文为主时 zh-Hans 排首位)。判定顺序:
@@ -152,7 +152,7 @@ public final class TranslationPipeline: @unchecked Sendable {
         }
         return OCRPriority(
             language: .automatic,
-            probedPage: (probeIndex, probe.lines, probe.confidence)
+            probedPage: probe
         )
     }
 
@@ -207,7 +207,7 @@ public final class TranslationPipeline: @unchecked Sendable {
         let ocr = makeOCR(priority.language)
 
         // 阶段 1/2:逐页解析,扫描页转 OCR。
-        var allLines: [TextLine] = []
+        var pageLayouts: [PageLayout] = []
         var lowQualityPages: [Int] = []
         for (processedIndex, pageIndex) in pageIndices.enumerated() {
             try Task.checkCancellation()
@@ -215,10 +215,10 @@ public final class TranslationPipeline: @unchecked Sendable {
             let extraction = PDFTextExtractor.extractPage(doc, pageIndex: pageIndex)
             if extraction.isScanned {
                 progress(PipelineProgress(stage: .ocr, currentPage: processedIndex + 1, totalPages: processingPageCount))
-                let recognized: (lines: [TextLine], confidence: Double)
-                if let probe = priority.probedPage, probe.pageIndex == pageIndex {
+                let recognized: OCRPageResult
+                if let probe = priority.probedPage, probe.layout.pageIndex == pageIndex {
                     // 优先级判定阶段已用最终优先级识别过该页,直接复用,避免重复 OCR。
-                    recognized = (probe.lines, probe.confidence)
+                    recognized = probe
                 } else {
                     guard let page = doc.page(at: pageIndex),
                           let image = PageRasterizer.rasterize(page: page) else {
@@ -231,15 +231,15 @@ public final class TranslationPipeline: @unchecked Sendable {
                 if recognized.confidence < Self.lowConfidenceThreshold {
                     lowQualityPages.append(pageIndex)
                 }
-                allLines.append(contentsOf: recognized.lines)
+                pageLayouts.append(recognized.layout)
             } else {
-                allLines.append(contentsOf: extraction.lines)
+                pageLayouts.append(extraction.layout)
             }
         }
 
         // 阶段 3:按页几何重排并清理确定的非正文行，再聚段、跨页合并。
-        let cleaned = TextLineCleaner.clean(allLines)
-        let paragraphs = ParagraphBuilder.mergeAcrossPages(ParagraphBuilder.buildParagraphs(from: cleaned.lines))
+        let cleaned = TextLineCleaner.clean(pageLayouts)
+        let paragraphs = ParagraphBuilder.mergeAcrossPages(ParagraphBuilder.buildParagraphs(from: cleaned.layouts))
         guard !paragraphs.isEmpty else { throw PDFLabError.noTextRecognized }
         let parsed = ParsedDocument(
             paragraphs: paragraphs,

@@ -19,13 +19,36 @@ public enum ParagraphBuilder {
     private static let sentenceEnders: Set<Character> = ["。", ".", "!", "?", "!", "?", ";", ";", ":", ":", "」", "”", "\"", "』"]
 
     public static func buildParagraphs(from lines: [TextLine]) -> [SourceParagraph] {
+        buildParagraphs(from: lines, sourceBlockID: nil)
+    }
+
+    public static func buildParagraphs(from blocks: [LayoutBlock]) -> [SourceParagraph] {
+        blocks.flatMap { buildParagraphs(from: $0.lines, sourceBlockID: $0.id) }
+    }
+
+    public static func buildParagraphs(from layouts: [PageLayout]) -> [SourceParagraph] {
+        buildParagraphs(from: layouts.flatMap(\.blocks))
+    }
+
+    private static func buildParagraphs(from lines: [TextLine], sourceBlockID: LayoutBlockID?) -> [SourceParagraph] {
         var result: [SourceParagraph] = []
-        var current: (text: String, page: Int, confs: [Double], lastBox: CGRect, listMarker: String?)? = nil
+        var current: (text: String, page: Int, confs: [Double], firstBox: CGRect, lastBox: CGRect, listMarker: String?)? = nil
 
         func flush() {
             if let c = current {
                 let conf = c.confs.isEmpty ? nil : c.confs.reduce(0, +) / Double(c.confs.count)
-                result.append(SourceParagraph(text: c.text, pageIndex: c.page, ocrConfidence: conf, listMarker: c.listMarker))
+                let sourceIDs = sourceBlockID.map { [$0] } ?? []
+                let unitID = sourceBlockID.map { TranslationUnitID("paragraph:\($0.rawValue):\(result.count)") }
+                result.append(SourceParagraph(
+                    text: c.text,
+                    pageIndex: c.page,
+                    ocrConfidence: conf,
+                    listMarker: c.listMarker,
+                    translationUnitID: unitID,
+                    sourceBlockIDs: sourceIDs,
+                    firstLineBBox: c.firstBox,
+                    lastLineBBox: c.lastBox
+                ))
             }
             current = nil
         }
@@ -40,7 +63,7 @@ public enum ParagraphBuilder {
                         flush()
                         let split = ParagraphListMarkerParser.splitLeadingMarker(in: next.text)
                         next.text = split?.body ?? next.text
-                        current = (next.text, next.pageIndex, next.confidence.map { [$0] } ?? [], next.bbox, split?.marker ?? marker)
+                        current = (next.text, next.pageIndex, next.confidence.map { [$0] } ?? [], next.bbox, next.bbox, split?.marker ?? marker)
                         index += 2
                         continue
                     }
@@ -51,12 +74,12 @@ public enum ParagraphBuilder {
             }
             if let split = ParagraphListMarkerParser.splitLeadingMarker(in: l.text) {
                 flush()
-                current = (split.body, l.pageIndex, l.confidence.map { [$0] } ?? [], l.bbox, split.marker)
+                current = (split.body, l.pageIndex, l.confidence.map { [$0] } ?? [], l.bbox, l.bbox, split.marker)
                 index += 1
                 continue
             }
 
-            guard var c = current, c.page == l.pageIndex else { flush(); current = (l.text, l.pageIndex, l.confidence.map { [$0] } ?? [], l.bbox, nil); index += 1; continue }
+            guard var c = current, c.page == l.pageIndex else { flush(); current = (l.text, l.pageIndex, l.confidence.map { [$0] } ?? [], l.bbox, l.bbox, nil); index += 1; continue }
             let sameVisualLine = isSameVisualLineContinuation(previous: c.lastBox, next: l.bbox)
             let sameParagraph = sameVisualLine || isNextLineContinuation(previous: c.lastBox, next: l.bbox)
             if sameParagraph {
@@ -64,7 +87,7 @@ public enum ParagraphBuilder {
                 if let cf = l.confidence { c.confs.append(cf) }
                 c.lastBox = sameVisualLine ? c.lastBox.union(l.bbox) : l.bbox
                 current = c
-            } else { flush(); current = (l.text, l.pageIndex, l.confidence.map { [$0] } ?? [], l.bbox, nil) }
+            } else { flush(); current = (l.text, l.pageIndex, l.confidence.map { [$0] } ?? [], l.bbox, l.bbox, nil) }
             index += 1
         }
         flush()
@@ -78,6 +101,8 @@ public enum ParagraphBuilder {
                let lastChar = prev.text.last, !sentenceEnders.contains(lastChar),
                let firstChar = p.text.first, isContinuation(firstChar) {
                 prev.text = join(prev.text, p.text)
+                prev.sourceBlockIDs.append(contentsOf: p.sourceBlockIDs.filter { !prev.sourceBlockIDs.contains($0) })
+                prev.lastLineBBox = p.lastLineBBox
                 out[out.count - 1] = prev
             } else { out.append(p) }
         }

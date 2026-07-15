@@ -26,29 +26,57 @@ public struct CleanedTextLines: Equatable, Sendable {
     }
 }
 
+public struct CleanedPageLayouts: Equatable, Sendable {
+    public var layouts: [PageLayout]
+    public var summary: TextCleanupSummary
+
+    public init(layouts: [PageLayout], summary: TextCleanupSummary) {
+        self.layouts = layouts
+        self.summary = summary
+    }
+}
+
 /// 聚段前的保守清洗。只移除能从位置与文本/置信度同时确认的非正文行。
 public enum TextLineCleaner {
     public static func clean(_ lines: [TextLine]) -> CleanedTextLines {
         let pages = Dictionary(grouping: lines, by: \.pageIndex)
-        let ordered = pages.keys.sorted().flatMap { OCRService.normalizeReadingOrder(pages[$0] ?? []) }
+        let layouts = pages.keys.sorted().map { PageReadingOrder.layout(pages[$0] ?? [], pageIndex: $0) }
+        let cleaned = clean(layouts)
+        return CleanedTextLines(lines: cleaned.layouts.flatMap(\.flattenedLines), summary: cleaned.summary)
+    }
+
+    public static func clean(_ layouts: [PageLayout]) -> CleanedPageLayouts {
+        let ordered = layouts.flatMap(\.flattenedLines)
         let pageNumberIndexes = Set(ordered.indices.filter { isPageNumber(ordered[$0]) })
         let repeatedEdgeIndexes = repeatedEdgeLineIndexes(in: ordered, excluding: pageNumberIndexes)
 
         var summary = TextCleanupSummary()
-        var retained: [TextLine] = []
-        for index in ordered.indices {
-            let line = ordered[index]
-            if pageNumberIndexes.contains(index) {
-                summary.pageNumbers += 1
-            } else if repeatedEdgeIndexes.contains(index) {
-                summary.repeatedEdgeLines += 1
-            } else if isOCRJunk(line) {
-                summary.ocrJunkLines += 1
-            } else {
-                retained.append(line)
+        var lineIndex = 0
+        let cleanedLayouts = layouts.map { layout in
+            let regions = layout.regions.compactMap { region -> LayoutRegion? in
+                let blocks = region.blocks.compactMap { block -> LayoutBlock? in
+                    var retained: [TextLine] = []
+                    for line in block.lines {
+                        if pageNumberIndexes.contains(lineIndex) {
+                            summary.pageNumbers += 1
+                        } else if repeatedEdgeIndexes.contains(lineIndex) {
+                            summary.repeatedEdgeLines += 1
+                        } else if isOCRJunk(line) {
+                            summary.ocrJunkLines += 1
+                        } else {
+                            retained.append(line)
+                        }
+                        lineIndex += 1
+                    }
+                    guard !retained.isEmpty else { return nil }
+                    return LayoutBlock(id: block.id, kind: block.kind, lines: retained)
+                }
+                guard !blocks.isEmpty else { return nil }
+                return LayoutRegion(id: region.id, kind: region.kind, source: region.source, blocks: blocks)
             }
+            return PageLayout(pageIndex: layout.pageIndex, regions: regions)
         }
-        return CleanedTextLines(lines: retained, summary: summary)
+        return CleanedPageLayouts(layouts: cleanedLayouts, summary: summary)
     }
 
     private static func repeatedEdgeLineIndexes(in lines: [TextLine], excluding excluded: Set<Int>) -> Set<Int> {
