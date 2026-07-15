@@ -105,7 +105,7 @@ private func line(_ t: String, page: Int = 0, y: CGFloat, conf: Double? = nil) -
 @Test func systemTitleAndListKindsTakePriorityOverGeometry() {
     let layout = OCRService.systemPageLayout(pageIndex: 0, blocks: [
         LayoutBlock(id: .init("title"), kind: .title, lines: [
-            TextLine(text: "System title", pageIndex: 0, bbox: CGRect(x: 0.1, y: 0.9, width: 0.8, height: 0.02))
+            TextLine(text: "1. System title", pageIndex: 0, bbox: CGRect(x: 0.1, y: 0.9, width: 0.8, height: 0.02))
         ]),
         LayoutBlock(id: .init("list"), kind: .listItem, lines: [
             TextLine(text: "System item", pageIndex: 0, bbox: CGRect(x: 0.1, y: 0.8, width: 0.8, height: 0.06))
@@ -113,6 +113,16 @@ private func line(_ t: String, page: Int = 0, y: CGFloat, conf: Double? = nil) -
     ])
     let paragraphs = ParagraphBuilder.buildParagraphs(from: [layout])
     #expect(paragraphs.map(\.kind) == [.heading(level: 1), .listItem(marker: "")])
+}
+
+@Test func footnoteGeometryTakesPriorityOverListLikeNumericPrefix() {
+    let body = (0..<7).map { index in
+        TextLine(text: "Body \(index)", pageIndex: 0, bbox: CGRect(x: 0.1, y: 0.8 - CGFloat(index) * 0.04, width: 0.8, height: 0.03))
+    }
+    let lines = body + [
+        TextLine(text: "1. Footnote", pageIndex: 0, bbox: CGRect(x: 0.1, y: 0.03, width: 0.4, height: 0.024))
+    ]
+    #expect(ParagraphBuilder.buildParagraphs(from: lines).last?.kind == .footnote)
 }
 
 @Test func indentationAndShortRightEdgeForceParagraphBreaksWithinTheirRegion() {

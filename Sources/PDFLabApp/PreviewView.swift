@@ -84,9 +84,10 @@ struct PreviewView: View {
     }
 
     private func previewText(_ text: String, kind: ComposedTextKind, foreground: HierarchicalShapeStyle) -> some View {
-        Text(text)
+        let resolvedForeground: HierarchicalShapeStyle = kind == .footnote ? .secondary : foreground
+        return Text(text)
             .font(Self.font(for: kind))
-            .foregroundStyle(foreground)
+            .foregroundStyle(resolvedForeground)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)

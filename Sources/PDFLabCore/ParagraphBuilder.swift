@@ -144,7 +144,20 @@ public enum ParagraphBuilder {
         var index = 0
         while index < block.lines.count {
             let line = block.lines[index]
-            if let standalone = ParagraphListMarkerParser.standaloneMarker(in: line.text),
+            let lineKind = semanticKind(
+                for: line,
+                blockKind: block.kind,
+                regionKind: region.kind,
+                baseline: baseline,
+                headingLevels: headingLevels
+            )
+            let allowsListParsing: Bool
+            switch lineKind {
+            case .body, .listItem: allowsListParsing = true
+            case .heading, .footnote: allowsListParsing = false
+            }
+            if allowsListParsing,
+               let standalone = ParagraphListMarkerParser.standaloneMarker(in: line.text),
                index + 1 < block.lines.count {
                 let next = block.lines[index + 1]
                 if next.pageIndex == line.pageIndex,
@@ -156,25 +169,18 @@ public enum ParagraphBuilder {
                     continue
                 }
             }
-            if ParagraphListMarkerParser.standaloneMarker(in: line.text) != nil {
+            if allowsListParsing, ParagraphListMarkerParser.standaloneMarker(in: line.text) != nil {
                 flush()
                 index += 1
                 continue
             }
-            if let split = ParagraphListMarkerParser.splitLeadingMarker(in: line.text) {
+            if allowsListParsing, let split = ParagraphListMarkerParser.splitLeadingMarker(in: line.text) {
                 flush()
                 start(line, text: split.body, kind: .listItem(marker: split.marker))
                 index += 1
                 continue
             }
 
-            let lineKind = semanticKind(
-                for: line,
-                blockKind: block.kind,
-                regionKind: region.kind,
-                baseline: baseline,
-                headingLevels: headingLevels
-            )
             guard var pending = current, pending.page == line.pageIndex else {
                 flush()
                 start(line, kind: lineKind)
