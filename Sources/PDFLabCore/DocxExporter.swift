@@ -9,7 +9,7 @@ public struct DocxExporter: Exporter {
     public init() {}
 
     public func export(_ doc: ComposedDocument, to url: URL, uiLanguageChinese: Bool) throws {
-        let documentXML = Self.renderDocumentXML(doc)
+        let documentXML = Self.renderDocumentXML(doc, uiLanguageChinese: uiLanguageChinese)
 
         let fileManager = FileManager.default
         let workDir = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -78,7 +78,7 @@ public struct DocxExporter: Exporter {
 
     // MARK: - XML rendering
 
-    private static func renderDocumentXML(_ doc: ComposedDocument) -> String {
+    private static func renderDocumentXML(_ doc: ComposedDocument, uiLanguageChinese: Bool) -> String {
         var body = ""
         var lastBreakIndex = 0
         for (index, block) in doc.blocks.enumerated() {
@@ -103,6 +103,9 @@ public struct DocxExporter: Exporter {
                     grayLevel: 0,
                     spacingAfter: ExportTypography.spacingAfter(blockAt: index, in: doc.blocks)
                 )
+            case .tableRegion(let table):
+                body += tableParagraphXML(uiLanguageChinese ? "[表格]" : "[Table]", bold: true)
+                for row in table.displayedRows { body += tableParagraphXML(row, bold: false) }
             }
         }
 
@@ -140,6 +143,11 @@ public struct DocxExporter: Exporter {
         }
         let line = twips(max(layout.lineHeight, CGFloat(fontSize) / 2 * 1.35))
         return "<w:p><w:pPr>\(style)<w:spacing w:line=\"\(line)\" w:lineRule=\"exact\" w:after=\"\(after)\"/>\(indent)<w:jc w:val=\"left\"/></w:pPr><w:r><w:rPr><w:sz w:val=\"\(fontSize)\"/>\(color)</w:rPr><w:t\(spaceAttribute)>\(xmlEscape(block.text))</w:t></w:r></w:p>"
+    }
+
+    private static func tableParagraphXML(_ text: String, bold: Bool) -> String {
+        let boldXML = bold ? "<w:b/>" : ""
+        return "<w:p><w:pPr><w:spacing w:line=\"336\" w:lineRule=\"exact\" w:after=\"0\"/><w:jc w:val=\"left\"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii=\"Menlo\" w:hAnsi=\"Menlo\" w:eastAsia=\"Menlo\"/><w:sz w:val=\"22\"/>\(boldXML)</w:rPr><w:t xml:space=\"preserve\">\(xmlEscape(text))</w:t></w:r></w:p>"
     }
 
     private static func twips(_ points: CGFloat) -> Int {

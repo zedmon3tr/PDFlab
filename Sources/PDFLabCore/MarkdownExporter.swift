@@ -21,6 +21,9 @@ public struct MarkdownExporter: Exporter {
                 output += Self.markdownText(block) + "\n\n"
             case .translatedText(let block):
                 output += Self.markdownText(block) + "\n\n"
+            case .tableRegion(let table):
+                let label = uiLanguageChinese ? "[表格]" : "[Table]"
+                output += label + "\n\n```\n" + table.displayedRows.joined(separator: "\n") + "\n```\n\n"
             }
         }
         if output.hasSuffix("\n\n") {

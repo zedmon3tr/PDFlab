@@ -239,10 +239,10 @@ public final class TranslationPipeline: @unchecked Sendable {
 
         // 阶段 3:按页几何重排并清理确定的非正文行，再聚段、跨页合并。
         let cleaned = TextLineCleaner.clean(pageLayouts)
-        let paragraphs = ParagraphBuilder.mergeAcrossPages(ParagraphBuilder.buildParagraphs(from: cleaned.layouts))
-        guard !paragraphs.isEmpty else { throw PDFLabError.noTextRecognized }
+        let blocks = ParsedBlockBuilder.build(from: cleaned.layouts)
+        guard !blocks.isEmpty else { throw PDFLabError.noTextRecognized }
         let parsed = ParsedDocument(
-            paragraphs: paragraphs,
+            blocks: blocks,
             pageCount: totalPages,
             lowQualityPages: lowQualityPages,
             cleanupSummary: cleaned.summary
@@ -269,9 +269,7 @@ public final class TranslationPipeline: @unchecked Sendable {
         }
 
         // 阶段 5:分批翻译(每批 10 段)。extractionOnly 跳过。
-        let translationInputs = paragraphs.enumerated().map { index, paragraph in
-            (id: paragraph.translationUnitID ?? TranslationUnitID("compat-paragraph:\(index)"), paragraph: paragraph)
-        }
+        let translationInputs = Self.translationInputs(from: parsed)
         var translatedUnits: [TranslatedUnit] = []
         if input.options.content != .extractionOnly {
 #if DEBUG
@@ -281,10 +279,10 @@ public final class TranslationPipeline: @unchecked Sendable {
             while index < translationInputs.count {
                 try Task.checkCancellation()
                 let batch = Array(translationInputs[index..<min(index + Self.translationBatchSize, translationInputs.count)])
-                let texts = batch.map(\.paragraph.text)
+                let texts = batch.map(\.text)
                 let batchNumber = index / Self.translationBatchSize + 1
-                let pageStart = (batch.first?.paragraph.pageIndex ?? 0) + 1
-                let pageEnd = (batch.last?.paragraph.pageIndex ?? 0) + 1
+                let pageStart = (batch.first?.pageIndex ?? 0) + 1
+                let pageEnd = (batch.last?.pageIndex ?? 0) + 1
 #if DEBUG
                 let started = Date()
                 let context = TranslationDiagnosticContext(runID: runID, batch: batchNumber, pageStart: pageStart, pageEnd: pageEnd)
@@ -328,6 +326,29 @@ public final class TranslationPipeline: @unchecked Sendable {
             direction: direction
         )
         return (composed, parsed)
+    }
+
+    private struct TranslationInputUnit {
+        var id: TranslationUnitID
+        var text: String
+        var pageIndex: Int
+    }
+
+    private static func translationInputs(from doc: ParsedDocument) -> [TranslationInputUnit] {
+        var paragraphIndex = 0
+        return doc.blocks.flatMap { block -> [TranslationInputUnit] in
+            switch block {
+            case .paragraph(let paragraph):
+                defer { paragraphIndex += 1 }
+                return [TranslationInputUnit(
+                    id: paragraph.translationUnitID ?? .init("compat-paragraph:\(paragraphIndex)"),
+                    text: paragraph.text,
+                    pageIndex: paragraph.pageIndex
+                )]
+            case .table(let table):
+                return table.rows.map { .init(id: $0.translationUnitID, text: $0.text, pageIndex: table.pageIndex) }
+            }
+        }
     }
 
     static func selectedPageIndices(

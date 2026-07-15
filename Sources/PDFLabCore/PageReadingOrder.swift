@@ -11,8 +11,23 @@ enum PageReadingOrder {
     }
 
     static func layout(_ lines: [TextLine], pageIndex: Int, orderedLines: [TextLine]? = nil) -> PageLayout {
-        let groups = recursiveRegions(lines, depth: 0)
-        let regions = groups.enumerated().map { index, group in
+        let tableDetections = TableRegionDetector.detect(in: lines)
+        let tableIndexes = Set(tableDetections.flatMap { $0.rows.flatMap { $0 } })
+        let bodyLines = lines.indices.filter { !tableIndexes.contains($0) }.map { lines[$0] }
+        let tableBounds = tableDetections.map { detection in
+            detection.rows.flatMap { $0 }.map { lines[$0].bbox }
+                .reduce(CGRect.null) { $0.union($1) }.standardized
+        }
+        let groups = tableBounds.reduce(recursiveRegions(bodyLines, depth: 0)) { groups, tableBounds in
+            groups.flatMap { group -> [[TextLine]] in
+                let above = group.filter { $0.bbox.minY >= tableBounds.maxY }
+                let below = group.filter { $0.bbox.maxY <= tableBounds.minY }
+                let alongside = group.filter { !above.contains($0) && !below.contains($0) }
+                guard alongside.isEmpty, !above.isEmpty, !below.isEmpty else { return [group] }
+                return [above, below]
+            }
+        }
+        var regions = groups.enumerated().map { index, group in
             let ordered = orderByBands(group)
             let blockID = LayoutBlockID("p\(pageIndex)-r\(index)-b0")
             let kind = regionKind(for: ordered)
@@ -23,7 +38,24 @@ enum PageReadingOrder {
                 blocks: [LayoutBlock(id: blockID, kind: .text, lines: ordered)]
             )
         }
-        return PageLayout(pageIndex: pageIndex, regions: regions, orderedLines: orderedLines ?? order(lines))
+        let tableRegions = tableDetections.enumerated().map { tableIndex, detection in
+            let blocks = detection.rows.enumerated().map { rowIndex, indexes in
+                LayoutBlock(
+                    id: .init("p\(pageIndex)-table\(tableIndex)-row\(rowIndex)"),
+                    kind: .tableRow,
+                    lines: indexes.map { lines[$0] }.sorted { $0.bbox.minX < $1.bbox.minX }
+                )
+            }
+            return LayoutRegion(
+                id: "p\(pageIndex)-table\(tableIndex)", kind: .table, source: .heuristic, blocks: blocks
+            )
+        }
+        let projection = orderedLines ?? order(lines)
+        for table in tableRegions.sorted(by: { $0.bbox.maxY > $1.bbox.maxY }) {
+            let insertion = regions.firstIndex { table.bbox.minY >= $0.bbox.maxY } ?? regions.endIndex
+            regions.insert(table, at: insertion)
+        }
+        return PageLayout(pageIndex: pageIndex, regions: regions, orderedLines: projection)
     }
 
     private static func recursiveRegions(_ lines: [TextLine], depth: Int) -> [[TextLine]] {

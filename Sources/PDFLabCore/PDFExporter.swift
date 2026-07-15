@@ -76,6 +76,13 @@ public struct PDFExporter: Exporter {
                     contentBottom: contentBottom,
                     state: state
                 )
+            case .tableRegion(let table):
+                let label = uiLanguageChinese ? "[表格]" : "[Table]"
+                try drawBlock(
+                    text: ([label] + table.displayedRows).joined(separator: "\n"), grayLevel: 0,
+                    spacingAfter: .outer, kind: .body, contentWidth: contentWidth,
+                    contentBottom: contentBottom, state: state, monospaced: true
+                )
             }
         }
         completed = true
@@ -113,7 +120,8 @@ public struct PDFExporter: Exporter {
         kind: ComposedTextKind,
         contentWidth: CGFloat,
         contentBottom: CGFloat,
-        state: PageState
+        state: PageState,
+        monospaced: Bool = false
     ) throws {
         guard !text.isEmpty else { return }
 
@@ -121,7 +129,8 @@ public struct PDFExporter: Exporter {
             for: text,
             grayLevel: grayLevel,
             spacingAfter: spacingAfter,
-            kind: kind
+            kind: kind,
+            monospaced: monospaced
         )
         let framesetter = CTFramesetterCreateWithAttributedString(attributed)
         var charIndex = 0
@@ -191,11 +200,15 @@ public struct PDFExporter: Exporter {
         for text: String,
         grayLevel: CGFloat,
         spacingAfter: ExportParagraphSpacing,
-        kind: ComposedTextKind = .body
+        kind: ComposedTextKind = .body,
+        monospaced: Bool = false
     ) -> NSAttributedString {
         let fontSize: CGFloat
         let font: CTFont
-        switch kind {
+        if monospaced {
+            fontSize = 11
+            font = CTFontCreateWithName("Menlo" as CFString, fontSize, nil)
+        } else { switch kind {
         case .heading(let level):
             fontSize = [20, 17, 14][min(max(level, 1), 3) - 1]
             font = CTFontCreateUIFontForLanguage(.emphasizedSystem, fontSize, nil)
@@ -208,6 +221,7 @@ public struct PDFExporter: Exporter {
             fontSize = ExportTypography.fontSize
             font = CTFontCreateUIFontForLanguage(.system, fontSize, nil)
                 ?? CTFontCreateWithName("Helvetica" as CFString, fontSize, nil)
+        }
         }
         let color = CGColor(gray: grayLevel, alpha: 1.0)
         let layout = ExportTypography.layout(for: text, spacingAfter: spacingAfter)

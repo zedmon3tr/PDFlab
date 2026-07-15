@@ -219,11 +219,42 @@ public struct ComposedTextBlock: Equatable, Sendable {
     }
 }
 
+public struct ComposedTableRegion: Equatable, Sendable {
+    public var groupID: TranslationUnitID
+    public var pageIndex: Int
+    public var sourceRows: [String]
+    public var translatedRows: [String]
+    public var content: OutputContent
+
+    public init(
+        groupID: TranslationUnitID,
+        pageIndex: Int,
+        sourceRows: [String],
+        translatedRows: [String],
+        content: OutputContent
+    ) {
+        self.groupID = groupID
+        self.pageIndex = pageIndex
+        self.sourceRows = sourceRows
+        self.translatedRows = translatedRows
+        self.content = content
+    }
+
+    public var displayedRows: [String] {
+        switch content {
+        case .translationOnly: return translatedRows
+        case .bilingual: return sourceRows + (translatedRows.isEmpty ? [] : [""]) + translatedRows
+        case .extractionOnly: return sourceRows
+        }
+    }
+}
+
 /// 组装后待渲染的块(任务13产出,任务14-16消费)。
 public enum ComposedBlock: Equatable, Sendable {
     case pageBreak(pageIndex: Int)        // 按页模式的页边界(pageIndex 为新页,0 计)
     case sourceText(ComposedTextBlock)
     case translatedText(ComposedTextBlock)
+    case tableRegion(ComposedTableRegion)
 
     public static func sourceText(_ text: String) -> ComposedBlock {
         .sourceText(ComposedTextBlock(text: text))

@@ -112,7 +112,7 @@ public struct OCRService: Sendable {
             }
             for (paragraphIndex, paragraph) in document.paragraphs.enumerated() {
                 let bounds = paragraph.boundingRegion.boundingBox.cgRect
-                guard !occupied.contains(where: { overlapRatio(bounds, $0) >= 0.5 }),
+                guard !occupied.contains(where: { Self.overlapRatio(bounds, $0) >= 0.5 }),
                       let region = systemTextRegion(
                         paragraph, pageIndex: pageIndex,
                         id: "system-p\(pageIndex)-paragraph\(paragraphIndex)", regionKind: .body, blockKind: .paragraph
@@ -120,6 +120,7 @@ public struct OCRService: Sendable {
                 regions.append(region)
             }
         }
+        regions = Self.removingBodyRegionsOverlappingSpecializedRegions(regions)
         regions.sort {
             if $0.bbox.maxY != $1.bbox.maxY { return $0.bbox.maxY > $1.bbox.maxY }
             return $0.bbox.minX < $1.bbox.minX
@@ -163,7 +164,15 @@ public struct OCRService: Sendable {
         )]
     }
 
-    private func overlapRatio(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
+    static func removingBodyRegionsOverlappingSpecializedRegions(_ regions: [LayoutRegion]) -> [LayoutRegion] {
+        let specializedBounds = regions.filter { $0.kind == .table || $0.kind == .list || $0.kind == .title }.map(\.bbox)
+        return regions.filter { region in
+            guard region.kind == .body else { return true }
+            return !specializedBounds.contains { overlapRatio(region.bbox, $0) >= 0.5 }
+        }
+    }
+
+    private static func overlapRatio(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
         let intersection = lhs.intersection(rhs)
         guard !intersection.isNull, lhs.width > 0, lhs.height > 0 else { return 0 }
         return (intersection.width * intersection.height) / (lhs.width * lhs.height)

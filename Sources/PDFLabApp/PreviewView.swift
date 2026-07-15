@@ -11,13 +11,18 @@ struct PreviewView: View {
         PreviewRow.rows(from: document, content: content)
     }
 
-    static func cleanupSummaryText(_ summary: TextCleanupSummary, format: String = L10n.t("translate.cleanupSummary")) -> String {
-        String(
-            format: format,
-            String(summary.repeatedEdgeLines),
-            String(summary.pageNumbers),
-            String(summary.ocrJunkLines)
-        )
+    static func cleanupSummaryText(_ summary: TextCleanupSummary, format: String? = nil) -> String {
+        let values = [String(summary.repeatedEdgeLines), String(summary.pageNumbers), String(summary.ocrJunkLines)]
+        if let format {
+            return String(format: format, arguments: values + [String(summary.tableRegions)])
+        }
+        if summary.tableRegions > 0, summary.removedLineCount > 0 {
+            return String(format: L10n.t("translate.cleanupSummaryWithTables"), arguments: values + [String(summary.tableRegions)])
+        }
+        if summary.tableRegions > 0 {
+            return String(format: L10n.t("translate.tableSummary"), String(summary.tableRegions))
+        }
+        return String(format: L10n.t("translate.cleanupSummary"), arguments: values)
     }
 
     var body: some View {
@@ -73,6 +78,20 @@ struct PreviewView: View {
                 .font(.headline)
                 .foregroundStyle(.secondary)
                 .padding(.top, 8)
+        } else if row.isTable {
+            VStack(alignment: .leading, spacing: 8) {
+                Label(L10n.t("translate.preview.table"), systemImage: "tablecells")
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                if content == .bilingual {
+                    HStack(alignment: .top, spacing: 16) {
+                        previewTableText(row.source ?? "")
+                        previewTableText(row.translation ?? "")
+                    }
+                } else {
+                    previewTableText(row.source ?? row.translation ?? "")
+                }
+            }
         } else if content == .bilingual {
             HStack(alignment: .top, spacing: 16) {
                 previewText(row.source ?? "", kind: row.kind, foreground: .secondary)
@@ -81,6 +100,12 @@ struct PreviewView: View {
         } else {
             previewText(row.source ?? row.translation ?? "", kind: row.kind, foreground: .primary)
         }
+    }
+
+    private func previewTableText(_ text: String) -> some View {
+        Text(text).font(.system(.body, design: .monospaced)).textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func previewText(_ text: String, kind: ComposedTextKind, foreground: HierarchicalShapeStyle) -> some View {
@@ -108,6 +133,7 @@ struct PreviewRow: Equatable {
     var source: String?
     var translation: String?
     var kind: ComposedTextKind = .body
+    var isTable: Bool = false
 
     static func rows(from document: ComposedDocument, content: OutputContent) -> [PreviewRow] {
         var rows: [PreviewRow] = []
@@ -187,6 +213,13 @@ struct PreviewRow: Equatable {
                 } else {
                     pageTranslations.append(block.text)
                 }
+            case .tableRegion(let table):
+                flushPageContent()
+                rows.append(PreviewRow(
+                    source: table.content == .translationOnly ? nil : table.sourceRows.joined(separator: "\n"),
+                    translation: table.content == .extractionOnly ? nil : table.translatedRows.joined(separator: "\n"),
+                    isTable: true
+                ))
             }
         }
 

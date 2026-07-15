@@ -4,16 +4,20 @@ public struct TextCleanupSummary: Equatable, Sendable {
     public var repeatedEdgeLines: Int
     public var pageNumbers: Int
     public var ocrJunkLines: Int
+    public var tableRegions: Int
 
-    public init(repeatedEdgeLines: Int = 0, pageNumbers: Int = 0, ocrJunkLines: Int = 0) {
+    public init(repeatedEdgeLines: Int = 0, pageNumbers: Int = 0, ocrJunkLines: Int = 0, tableRegions: Int = 0) {
         self.repeatedEdgeLines = repeatedEdgeLines
         self.pageNumbers = pageNumbers
         self.ocrJunkLines = ocrJunkLines
+        self.tableRegions = tableRegions
     }
 
     public var hasFilteredLines: Bool {
-        repeatedEdgeLines + pageNumbers + ocrJunkLines > 0
+        repeatedEdgeLines + pageNumbers + ocrJunkLines + tableRegions > 0
     }
+
+    public var removedLineCount: Int { repeatedEdgeLines + pageNumbers + ocrJunkLines }
 }
 
 public struct CleanedTextLines: Equatable, Sendable {
@@ -71,6 +75,9 @@ public enum TextLineCleaner {
         let repeatedEdgeIndexes = repeatedEdgeLineIndexes(in: ordered, excluding: pageNumberIndexes)
 
         var summary = TextCleanupSummary()
+        summary.tableRegions = layouts.reduce(0) { count, layout in
+            count + layout.regions.filter { $0.kind == .table }.count
+        }
         var removedIndexes = pageNumberIndexes.union(repeatedEdgeIndexes)
         for index in ordered.indices where isOCRJunk(ordered[index]) { removedIndexes.insert(index) }
         var occurrenceQueues: [LineOccurrenceKey: [Int]] = [:]
