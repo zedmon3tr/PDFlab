@@ -61,6 +61,7 @@ public struct PDFExporter: Exporter {
                     text: textBlock.text,
                     grayLevel: ExportTypography.grayLevel(blockAt: index, in: doc.blocks),
                     spacingAfter: ExportTypography.spacingAfter(blockAt: index, in: doc.blocks),
+                    kind: textBlock.kind,
                     contentWidth: contentWidth,
                     contentBottom: contentBottom,
                     state: state
@@ -70,6 +71,7 @@ public struct PDFExporter: Exporter {
                     text: textBlock.text,
                     grayLevel: 0.0,
                     spacingAfter: ExportTypography.spacingAfter(blockAt: index, in: doc.blocks),
+                    kind: textBlock.kind,
                     contentWidth: contentWidth,
                     contentBottom: contentBottom,
                     state: state
@@ -108,6 +110,7 @@ public struct PDFExporter: Exporter {
         text: String,
         grayLevel: CGFloat,
         spacingAfter: ExportParagraphSpacing,
+        kind: ComposedTextKind,
         contentWidth: CGFloat,
         contentBottom: CGFloat,
         state: PageState
@@ -117,7 +120,8 @@ public struct PDFExporter: Exporter {
         let attributed = Self.attributedString(
             for: text,
             grayLevel: grayLevel,
-            spacingAfter: spacingAfter
+            spacingAfter: spacingAfter,
+            kind: kind
         )
         let framesetter = CTFramesetterCreateWithAttributedString(attributed)
         var charIndex = 0
@@ -186,10 +190,25 @@ public struct PDFExporter: Exporter {
     static func attributedString(
         for text: String,
         grayLevel: CGFloat,
-        spacingAfter: ExportParagraphSpacing
+        spacingAfter: ExportParagraphSpacing,
+        kind: ComposedTextKind = .body
     ) -> NSAttributedString {
-        let font = CTFontCreateUIFontForLanguage(.system, ExportTypography.fontSize, nil)
-            ?? CTFontCreateWithName("Helvetica" as CFString, ExportTypography.fontSize, nil)
+        let fontSize: CGFloat
+        let font: CTFont
+        switch kind {
+        case .heading(let level):
+            fontSize = [20, 17, 14][min(max(level, 1), 3) - 1]
+            font = CTFontCreateUIFontForLanguage(.emphasizedSystem, fontSize, nil)
+                ?? CTFontCreateWithName("Helvetica-Bold" as CFString, fontSize, nil)
+        case .footnote:
+            fontSize = 10
+            font = CTFontCreateUIFontForLanguage(.system, fontSize, nil)
+                ?? CTFontCreateWithName("Helvetica" as CFString, fontSize, nil)
+        case .body, .listItem:
+            fontSize = ExportTypography.fontSize
+            font = CTFontCreateUIFontForLanguage(.system, fontSize, nil)
+                ?? CTFontCreateWithName("Helvetica" as CFString, fontSize, nil)
+        }
         let color = CGColor(gray: grayLevel, alpha: 1.0)
         let layout = ExportTypography.layout(for: text, spacingAfter: spacingAfter)
         var alignment = CTTextAlignment.left
@@ -197,6 +216,16 @@ public struct PDFExporter: Exporter {
         var maximumLineHeight = layout.lineHeight
         var paragraphSpacing = layout.paragraphSpacing
         var firstLineIndent = layout.firstLineIndent
+        let usesSemanticMetrics: Bool
+        switch kind {
+        case .heading, .footnote: usesSemanticMetrics = true
+        case .body, .listItem: usesSemanticMetrics = false
+        }
+        if usesSemanticMetrics {
+            firstLineIndent = 0
+            minimumLineHeight = max(minimumLineHeight, fontSize * 1.3)
+            maximumLineHeight = minimumLineHeight
+        }
         let paragraphStyle = withUnsafePointer(to: &alignment) { alignmentPointer in
             withUnsafePointer(to: &minimumLineHeight) { minimumPointer in
                 withUnsafePointer(to: &maximumLineHeight) { maximumPointer in

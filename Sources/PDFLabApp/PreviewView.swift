@@ -75,22 +75,30 @@ struct PreviewView: View {
                 .padding(.top, 8)
         } else if content == .bilingual {
             HStack(alignment: .top, spacing: 16) {
-                previewText(row.source ?? "", foreground: .secondary)
-                previewText(row.translation ?? "", foreground: .primary)
+                previewText(row.source ?? "", kind: row.kind, foreground: .secondary)
+                previewText(row.translation ?? "", kind: row.kind, foreground: .primary)
             }
         } else {
-            previewText(row.source ?? row.translation ?? "", foreground: .primary)
+            previewText(row.source ?? row.translation ?? "", kind: row.kind, foreground: .primary)
         }
     }
 
-    private func previewText(_ text: String, foreground: HierarchicalShapeStyle) -> some View {
+    private func previewText(_ text: String, kind: ComposedTextKind, foreground: HierarchicalShapeStyle) -> some View {
         Text(text)
-            .font(.body)
+            .font(Self.font(for: kind))
             .foregroundStyle(foreground)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
             .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    static func font(for kind: ComposedTextKind) -> Font {
+        switch kind {
+        case .heading(let level): return level == 1 ? .title2.bold() : .title3.bold()
+        case .footnote: return .footnote
+        case .body, .listItem: return .body
+        }
     }
 }
 
@@ -98,12 +106,27 @@ struct PreviewRow: Equatable {
     var pageIndex: Int?
     var source: String?
     var translation: String?
+    var kind: ComposedTextKind = .body
 
     static func rows(from document: ComposedDocument, content: OutputContent) -> [PreviewRow] {
         var rows: [PreviewRow] = []
         var pendingSource: String?
         var pageSources: [String] = []
         var pageTranslations: [String] = []
+
+        func appendSemantic(_ block: ComposedTextBlock, source: Bool) {
+            flushPageContent()
+            if source {
+                rows.append(PreviewRow(source: block.text, kind: block.kind))
+            } else if let last = rows.indices.last,
+                      rows[last].translation == nil,
+                      rows[last].kind == block.kind,
+                      rows[last].source != nil {
+                rows[last].translation = block.text
+            } else {
+                rows.append(PreviewRow(translation: block.text, kind: block.kind))
+            }
+        }
 
         func appendPendingSource() {
             if let source = pendingSource {
@@ -139,6 +162,10 @@ struct PreviewRow: Equatable {
                 flushPageContent()
                 rows.append(PreviewRow(pageIndex: pageIndex))
             case .sourceText(let block):
+                if isSemanticCallout(block.kind) {
+                    appendSemantic(block, source: true)
+                    continue
+                }
                 if content == .bilingual {
                     if let source = pendingSource {
                         pageSources.append(source)
@@ -148,6 +175,10 @@ struct PreviewRow: Equatable {
                     pageSources.append(block.text)
                 }
             case .translatedText(let block):
+                if isSemanticCallout(block.kind) {
+                    appendSemantic(block, source: false)
+                    continue
+                }
                 if content == .bilingual {
                     appendPendingSource()
                     pageTranslations.append(block.text)
@@ -161,5 +192,12 @@ struct PreviewRow: Equatable {
         flushPageContent()
 
         return rows
+    }
+
+    private static func isSemanticCallout(_ kind: ComposedTextKind) -> Bool {
+        switch kind {
+        case .heading, .footnote: return true
+        case .body, .listItem: return false
+        }
     }
 }

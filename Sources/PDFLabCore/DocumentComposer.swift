@@ -48,16 +48,22 @@ public enum DocumentComposer {
             case .translationOnly:
                 blocks.append(.translatedText(.init(
                     text: paragraph.textWithListMarker(translationsByID[unitID] ?? ""),
-                    groupID: unitID
+                    groupID: unitID,
+                    kind: composedKind(paragraph.kind)
                 )))
             case .bilingual:
-                blocks.append(.sourceText(.init(text: paragraph.displayText, groupID: unitID)))
+                blocks.append(.sourceText(.init(
+                    text: paragraph.displayText, groupID: unitID, kind: composedKind(paragraph.kind)
+                )))
                 blocks.append(.translatedText(.init(
                     text: paragraph.textWithListMarker(translationsByID[unitID] ?? ""),
-                    groupID: unitID
+                    groupID: unitID,
+                    kind: composedKind(paragraph.kind)
                 )))
             case .extractionOnly:
-                blocks.append(.sourceText(.init(text: paragraph.displayText, groupID: unitID)))
+                blocks.append(.sourceText(.init(
+                    text: paragraph.displayText, groupID: unitID, kind: composedKind(paragraph.kind)
+                )))
             }
         }
 
@@ -71,5 +77,14 @@ public enum DocumentComposer {
 
     private static func resolvedID(for paragraph: SourceParagraph, index: Int) -> TranslationUnitID {
         paragraph.translationUnitID ?? TranslationUnitID("compat-paragraph:\(index)")
+    }
+
+    private static func composedKind(_ kind: SourceParagraphKind) -> ComposedTextKind {
+        switch kind {
+        case .body: return .body
+        case .heading(let level): return .heading(level: level)
+        case .listItem(let marker): return .listItem(marker: marker)
+        case .footnote: return .footnote
+        }
     }
 }

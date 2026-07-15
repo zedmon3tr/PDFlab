@@ -19,32 +19,50 @@ public struct TranslationUnitID: RawRepresentable, Hashable, Equatable, Sendable
 }
 
 /// 一段源文本。pageIndex 从 0 计,是段落起始页(跨页段落归起始页)。
+public enum SourceParagraphKind: Equatable, Sendable {
+    case body
+    case heading(level: Int)
+    case listItem(marker: String)
+    case footnote
+}
+
 public struct SourceParagraph: Equatable, Sendable {
     public var text: String
     public var pageIndex: Int
     public var ocrConfidence: Double?   // nil = 来自文本层非 OCR
-    public var listMarker: String?
+    public var kind: SourceParagraphKind
+    public var listMarker: String? {
+        guard case let .listItem(marker) = kind, !marker.isEmpty else { return nil }
+        return marker
+    }
     public var translationUnitID: TranslationUnitID?
     public var sourceBlockIDs: [LayoutBlockID]
     public var firstLineBBox: CGRect?
     public var lastLineBBox: CGRect?
+    public var regionBodyRightEdge: CGFloat?
+    public var lastLineIsShort: Bool
     public init(
         text: String,
         pageIndex: Int,
         ocrConfidence: Double? = nil,
+        kind: SourceParagraphKind? = nil,
         listMarker: String? = nil,
         translationUnitID: TranslationUnitID? = nil,
         sourceBlockIDs: [LayoutBlockID] = [],
         firstLineBBox: CGRect? = nil,
-        lastLineBBox: CGRect? = nil
+        lastLineBBox: CGRect? = nil,
+        regionBodyRightEdge: CGFloat? = nil,
+        lastLineIsShort: Bool = false
     ) {
         self.text = text
         self.pageIndex = pageIndex
         self.ocrConfidence = ocrConfidence
-        self.listMarker = listMarker
+        self.kind = kind ?? listMarker.map(SourceParagraphKind.listItem(marker:)) ?? .body
         self.sourceBlockIDs = sourceBlockIDs
         self.firstLineBBox = firstLineBBox
         self.lastLineBBox = lastLineBBox
+        self.regionBodyRightEdge = regionBodyRightEdge
+        self.lastLineIsShort = lastLineIsShort
         self.translationUnitID = translationUnitID
     }
 
@@ -184,6 +202,9 @@ public struct ExportOptions: Equatable, Sendable {
 
 public enum ComposedTextKind: Equatable, Sendable {
     case body
+    case heading(level: Int)
+    case listItem(marker: String)
+    case footnote
 }
 
 public struct ComposedTextBlock: Equatable, Sendable {
