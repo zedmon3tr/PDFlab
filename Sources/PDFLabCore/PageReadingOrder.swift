@@ -31,7 +31,7 @@ enum PageReadingOrder {
                 !tableBounds.contains { bounds in overlapRatio(line.bbox, bounds) >= 0.98 }
             }
         }
-        let groups = tableBounds.reduce(recursiveRegions(bodyLines, depth: 0)) { groups, tableBounds in
+        let separatedGroups = tableBounds.reduce(recursiveRegions(bodyLines, depth: 0)) { groups, tableBounds in
             groups.flatMap { group -> [[TextLine]] in
                 let above = group.filter { $0.bbox.minY >= tableBounds.maxY }
                 let below = group.filter { $0.bbox.maxY <= tableBounds.minY }
@@ -40,6 +40,7 @@ enum PageReadingOrder {
                 return [above, below]
             }
         }
+        let groups = mergeTightlyAdjacentColumnFragments(separatedGroups)
         var regions = groups.enumerated().map { index, group in
             let ordered = orderByBands(group)
             let blockID = LayoutBlockID("p\(pageIndex)-r\(index)-b0")
@@ -71,6 +72,57 @@ enum PageReadingOrder {
         }
         let projection = orderedLines ?? (tableCandidates == nil ? order(lines) : regions.flatMap(\.flattenedLines))
         return PageLayout(pageIndex: pageIndex, regions: regions, orderedLines: projection)
+    }
+
+    /// Recursive whitespace cuts can occasionally peel one or two rows out of
+    /// an otherwise continuous column. Reattach only near-touching, left-edge
+    /// aligned fragments; ParagraphBuilder still decides the semantic break.
+    private static func mergeTightlyAdjacentColumnFragments(_ groups: [[TextLine]]) -> [[TextLine]] {
+        var merged = groups
+        var absorbed: Set<Int> = []
+
+        for anchorIndex in merged.indices where merged[anchorIndex].count >= 3 {
+            var changed = true
+            while changed {
+                changed = false
+                for fragmentIndex in merged.indices where fragmentIndex != anchorIndex && !absorbed.contains(fragmentIndex) {
+                    guard merged[fragmentIndex].count <= 2,
+                          isTightlyAdjacentColumnFragment(merged[fragmentIndex], to: merged[anchorIndex]) else { continue }
+                    merged[anchorIndex].append(contentsOf: merged[fragmentIndex])
+                    merged[anchorIndex] = orderByBands(merged[anchorIndex])
+                    absorbed.insert(fragmentIndex)
+                    changed = true
+                }
+            }
+        }
+        return merged.indices.compactMap { absorbed.contains($0) ? nil : merged[$0] }
+    }
+
+    private static func isTightlyAdjacentColumnFragment(_ fragment: [TextLine], to anchor: [TextLine]) -> Bool {
+        let fragmentBox = fragment.map(\.bbox).reduce(CGRect.null) { $0.union($1) }.standardized
+        let anchorBox = anchor.map(\.bbox).reduce(CGRect.null) { $0.union($1) }.standardized
+        guard !fragmentBox.isNull, !anchorBox.isNull else { return false }
+
+        let fragmentHeight = median(fragment.map { max($0.bbox.height, 0.001) })
+        let anchorHeight = median(anchor.map { max($0.bbox.height, 0.001) })
+        let lineHeight = max(fragmentHeight, anchorHeight)
+        guard abs(fragmentBox.minX - anchorBox.minX) <= lineHeight * 0.5 else { return false }
+
+        let overlap = min(fragmentBox.maxX, anchorBox.maxX) - max(fragmentBox.minX, anchorBox.minX)
+        guard overlap >= min(fragmentBox.width, anchorBox.width) * 0.8 else { return false }
+
+        let verticalGap = fragment.flatMap { fragmentLine in
+            anchor.compactMap { anchorLine -> CGFloat? in
+                if fragmentLine.bbox.maxY <= anchorLine.bbox.minY {
+                    return anchorLine.bbox.minY - fragmentLine.bbox.maxY
+                }
+                if anchorLine.bbox.maxY <= fragmentLine.bbox.minY {
+                    return fragmentLine.bbox.minY - anchorLine.bbox.maxY
+                }
+                return nil
+            }
+        }.min()
+        return verticalGap.map { $0 <= lineHeight * 0.35 } ?? false
     }
 
     private static func overlapRatio(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
