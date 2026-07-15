@@ -185,15 +185,15 @@ public struct OCRService: Sendable {
         bbox: CGRect? = nil
     ) -> LayoutRegion? {
         let blocks = cellRows.enumerated().compactMap { rowIndex, cells -> LayoutBlock? in
-            let tableCells = cells.enumerated().compactMap { columnIndex, lines -> LayoutTableCell? in
+            let tableCells = cells.enumerated().map { columnIndex, lines -> LayoutTableCell in
                 let ordered = lines.sorted {
                     if $0.bbox.midY != $1.bbox.midY { return $0.bbox.midY > $1.bbox.midY }
                     if $0.bbox.minX != $1.bbox.minX { return $0.bbox.minX < $1.bbox.minX }
                     return $0.text < $1.text
                 }
-                return ordered.isEmpty ? nil : LayoutTableCell(columnIndex: columnIndex, lines: ordered)
+                return LayoutTableCell(columnIndex: columnIndex, lines: ordered)
             }
-            guard !tableCells.isEmpty else { return nil }
+            guard tableCells.contains(where: { !$0.lines.isEmpty }) else { return nil }
             return LayoutBlock(
                 id: .init("system-p\(pageIndex)-table\(tableIndex)-row\(rowIndex)"),
                 kind: .tableRow,

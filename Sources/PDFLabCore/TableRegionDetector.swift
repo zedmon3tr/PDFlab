@@ -159,10 +159,18 @@ enum ParsedBlockBuilder {
                 }
                 guard region.kind == .table else { continue }
                 let rows = region.blocks.compactMap { block -> SourceTableRow? in
-                    let cells = block.tableCells.isEmpty
+                    let rawCells = block.tableCells.isEmpty
                         ? block.lines.sorted { $0.bbox.minX < $1.bbox.minX }
                             .enumerated().map { LayoutTableCell(columnIndex: $0.offset, lines: [$0.element]) }
                         : block.tableCells.sorted { $0.columnIndex < $1.columnIndex }
+                    let grouped = Dictionary(grouping: rawCells.filter { $0.columnIndex >= 0 }, by: \.columnIndex)
+                    guard let lastColumn = grouped.keys.max() else { return nil }
+                    let cells = (0...lastColumn).map { columnIndex in
+                        LayoutTableCell(
+                            columnIndex: columnIndex,
+                            lines: (grouped[columnIndex] ?? []).flatMap(\.lines)
+                        )
+                    }
                     let text = cells.map { cell in
                         cell.lines.reduce("") { text, line in
                             text.isEmpty ? line.text : ParagraphBuilder.join(text, line.text)

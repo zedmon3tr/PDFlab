@@ -114,6 +114,7 @@ public enum TextLineCleaner {
                     guard !retained.isEmpty else { return nil }
                     let bounds = retained.count == block.lines.count ? block.bbox : nil
                     let retainedCells = block.tableCells.compactMap { cell -> LayoutTableCell? in
+                        if cell.lines.isEmpty { return cell }
                         let lines = cell.lines.filter { retained.contains($0) }
                         return lines.isEmpty ? nil : LayoutTableCell(columnIndex: cell.columnIndex, lines: lines)
                     }
