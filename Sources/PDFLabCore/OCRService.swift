@@ -14,6 +14,16 @@ public struct OCRPageResult: Equatable, Sendable {
 }
 
 public struct OCRService: Sendable {
+    private static let lowConfidenceThreshold = 0.5
+    private static let nearZeroLineCount = 1
+    private static let rotationScoreImprovement = 0.03
+    private static let rotationConfidenceTolerance = 0.02
+
+    private enum TextRecognitionLevel {
+        case accurate
+        case fast
+    }
+
     private let languages: [Locale.Language]
     private let legacyLanguageIdentifiers: [String]
 
@@ -48,19 +58,76 @@ public struct OCRService: Sendable {
     }
 
     public func recognizePage(_ image: CGImage, pageIndex: Int) async throws -> OCRPageResult {
+        try Task.checkCancellation()
         let first = try await runOnce(image, pageIndex: pageIndex)
-        if first.confidence < 0.5 {
-            let retry = try await runOnce(ImagePreprocessor.enhance(image), pageIndex: pageIndex)
-            return retry.confidence > first.confidence ? retry : first
+        try Task.checkCancellation()
+        guard Self.needsCorrection(first) else { return first }
+
+        try Task.checkCancellation()
+        let enhancedImage = ImagePreprocessor.enhance(image)
+        try Task.checkCancellation()
+        let retry = try await runOnce(enhancedImage, pageIndex: pageIndex)
+        try Task.checkCancellation()
+        let baseline = Self.preferred(first, retry)
+        guard Self.needsCorrection(baseline) else { return baseline }
+
+        let screeningLevel = textScreeningLevel()
+        var screened: [(degrees: Int, result: OCRPageResult)] = []
+        for degrees in [0, 90, 180, 270] {
+            try Task.checkCancellation()
+            guard let candidateImage = PageRasterizer.rotated(image, clockwiseDegrees: degrees) else { continue }
+            let candidate = try await runTextRecognition(
+                candidateImage,
+                pageIndex: pageIndex,
+                level: screeningLevel
+            )
+            try Task.checkCancellation()
+            screened.append((degrees, candidate))
         }
-        return first
+
+        let screeningMaxCharacters = Self.maxCharacterCount(in: screened.map(\.result))
+        guard let zeroScreen = screened.first(where: { $0.degrees == 0 }),
+              let screenWinner = screened.max(by: {
+                  Self.rotationCandidateScore($0.result, maxCharacterCount: screeningMaxCharacters)
+                      < Self.rotationCandidateScore($1.result, maxCharacterCount: screeningMaxCharacters)
+              }),
+              screenWinner.degrees != 0,
+              Self.shouldAcceptRotation(screenWinner.result, over: zeroScreen.result),
+              let rotatedImage = PageRasterizer.rotated(image, clockwiseDegrees: screenWinner.degrees) else {
+            await recordRotationDiagnostic(pageIndex: pageIndex, triedAngles: screened.map(\.degrees), baseline: baseline, selected: baseline)
+            return baseline
+        }
+
+        try Task.checkCancellation()
+        var rotated = try await runOnce(rotatedImage, pageIndex: pageIndex)
+        try Task.checkCancellation()
+        if Self.needsCorrection(rotated) {
+            let enhancedRotatedImage = ImagePreprocessor.enhance(rotatedImage)
+            try Task.checkCancellation()
+            let enhancedRotated = try await runOnce(enhancedRotatedImage, pageIndex: pageIndex)
+            try Task.checkCancellation()
+            rotated = Self.preferred(rotated, enhancedRotated)
+        }
+
+        guard Self.shouldAcceptRotation(rotated, over: baseline) else {
+            await recordRotationDiagnostic(pageIndex: pageIndex, triedAngles: screened.map(\.degrees), baseline: baseline, selected: baseline)
+            return baseline
+        }
+        rotated.layout.rotationDegrees = screenWinner.degrees
+        await recordRotationDiagnostic(pageIndex: pageIndex, triedAngles: screened.map(\.degrees), baseline: baseline, selected: rotated)
+        return rotated
     }
 
     private func runOnce(_ image: CGImage, pageIndex: Int) async throws -> OCRPageResult {
+        try Task.checkCancellation()
         if #available(macOS 26.0, *) {
-            return try await runDocumentRecognition(image, pageIndex: pageIndex)
+            let result = try await runDocumentRecognition(image, pageIndex: pageIndex)
+            try Task.checkCancellation()
+            return result
         } else {
-            return try await runTextRecognition(image, pageIndex: pageIndex)
+            let result = try await runTextRecognition(image, pageIndex: pageIndex, level: .accurate)
+            try Task.checkCancellation()
+            return result
         }
     }
 
@@ -214,22 +281,33 @@ public struct OCRService: Sendable {
         return (intersection.width * intersection.height) / (lhs.width * lhs.height)
     }
 
-    private func runTextRecognition(_ image: CGImage, pageIndex: Int) async throws -> OCRPageResult {
+    private func runTextRecognition(
+        _ image: CGImage,
+        pageIndex: Int,
+        level: TextRecognitionLevel
+    ) async throws -> OCRPageResult {
+        try Task.checkCancellation()
         if #available(macOS 15.0, *) {
-            return try await runModernTextRecognition(image, pageIndex: pageIndex)
+            return try await runModernTextRecognition(image, pageIndex: pageIndex, level: level)
         }
 
-        return try await runLegacyTextRecognition(image, pageIndex: pageIndex)
+        return try await runLegacyTextRecognition(image, pageIndex: pageIndex, level: level)
     }
 
     @available(macOS 15.0, *)
-    private func runModernTextRecognition(_ image: CGImage, pageIndex: Int) async throws -> OCRPageResult {
+    private func runModernTextRecognition(
+        _ image: CGImage,
+        pageIndex: Int,
+        level: TextRecognitionLevel
+    ) async throws -> OCRPageResult {
         var request = RecognizeTextRequest()
-        request.recognitionLevel = .accurate
+        request.recognitionLevel = level == .fast ? .fast : .accurate
         request.usesLanguageCorrection = true
         request.recognitionLanguages = languages
 
+        try Task.checkCancellation()
         let observations = try await request.perform(on: image)
+        try Task.checkCancellation()
         var lines: [TextLine] = []
 
         for observation in observations {
@@ -246,8 +324,13 @@ public struct OCRService: Sendable {
         return normalizedResult(lines, pageIndex: pageIndex)
     }
 
-    private func runLegacyTextRecognition(_ image: CGImage, pageIndex: Int) async throws -> OCRPageResult {
-        try await withCheckedThrowingContinuation { continuation in
+    private func runLegacyTextRecognition(
+        _ image: CGImage,
+        pageIndex: Int,
+        level: TextRecognitionLevel
+    ) async throws -> OCRPageResult {
+        try Task.checkCancellation()
+        let result: OCRPageResult = try await withCheckedThrowingContinuation { continuation in
             let request = VNRecognizeTextRequest { request, error in
                 if let error {
                     continuation.resume(throwing: error)
@@ -266,7 +349,8 @@ public struct OCRService: Sendable {
                 }
                 continuation.resume(returning: self.normalizedResult(lines, pageIndex: pageIndex))
             }
-            request.recognitionLevel = .accurate
+            request.revision = VNRecognizeTextRequestRevision3
+            request.recognitionLevel = level == .fast ? .fast : .accurate
             request.usesLanguageCorrection = true
             request.recognitionLanguages = legacyLanguageIdentifiers
 
@@ -276,6 +360,73 @@ public struct OCRService: Sendable {
                 continuation.resume(throwing: error)
             }
         }
+        try Task.checkCancellation()
+        return result
+    }
+
+    private func textScreeningLevel() -> TextRecognitionLevel {
+        if #available(macOS 15.0, *) {
+            var request = RecognizeTextRequest()
+            request.recognitionLevel = .fast
+            return request.supportedRecognitionLanguages.contains(languages[0]) ? .fast : .accurate
+        }
+        let request = VNRecognizeTextRequest()
+        request.revision = VNRecognizeTextRequestRevision3
+        request.recognitionLevel = .fast
+        let supported = (try? request.supportedRecognitionLanguages()) ?? []
+        return supported.contains(legacyLanguageIdentifiers[0]) ? .fast : .accurate
+    }
+
+    static func needsCorrection(_ result: OCRPageResult) -> Bool {
+        result.confidence < lowConfidenceThreshold || result.lines.count <= nearZeroLineCount
+    }
+
+    private static func characterCount(_ result: OCRPageResult) -> Int {
+        result.lines.reduce(into: 0) { count, line in
+            count += line.text.filter { !$0.isWhitespace }.count
+        }
+    }
+
+    private static func maxCharacterCount(in results: [OCRPageResult]) -> Int {
+        results.map(characterCount).max() ?? 0
+    }
+
+    static func rotationCandidateScore(_ result: OCRPageResult, maxCharacterCount: Int) -> Double {
+        let characterSignal = maxCharacterCount > 0
+            ? min(Double(characterCount(result)) / Double(maxCharacterCount), 1)
+            : 0
+        return 0.8 * result.confidence + 0.2 * characterSignal
+    }
+
+    static func shouldAcceptRotation(_ candidate: OCRPageResult, over baseline: OCRPageResult) -> Bool {
+        let maxCharacters = maxCharacterCount(in: [baseline, candidate])
+        return rotationCandidateScore(candidate, maxCharacterCount: maxCharacters)
+                >= rotationCandidateScore(baseline, maxCharacterCount: maxCharacters) + rotationScoreImprovement
+            && candidate.confidence >= baseline.confidence - rotationConfidenceTolerance
+    }
+
+    private static func preferred(_ lhs: OCRPageResult, _ rhs: OCRPageResult) -> OCRPageResult {
+        let maxCharacters = maxCharacterCount(in: [lhs, rhs])
+        let lhsScore = rotationCandidateScore(lhs, maxCharacterCount: maxCharacters)
+        let rhsScore = rotationCandidateScore(rhs, maxCharacterCount: maxCharacters)
+        return rhsScore > lhsScore ? rhs : lhs
+    }
+
+    private func recordRotationDiagnostic(
+        pageIndex: Int,
+        triedAngles: [Int],
+        baseline: OCRPageResult,
+        selected: OCRPageResult
+    ) async {
+        #if DEBUG
+        await OCRRotationDiagnostics.shared.record(.init(
+            pageIndex: pageIndex,
+            attemptedDegrees: triedAngles,
+            baselineConfidence: baseline.confidence,
+            selectedDegrees: selected.layout.rotationDegrees,
+            selectedConfidence: selected.confidence
+        ))
+        #endif
     }
 
     private func normalizedResult(_ lines: [TextLine], pageIndex: Int) -> OCRPageResult {

@@ -78,11 +78,14 @@ public struct LayoutRegion: Equatable, Sendable {
 
 public struct PageLayout: Equatable, Sendable {
     public var pageIndex: Int
+    /// Clockwise right-angle correction applied before recognition.
+    public var rotationDegrees: Int
     public var regions: [LayoutRegion]
     private var orderedLineProjection: [TextLine]?
 
-    public init(pageIndex: Int, regions: [LayoutRegion], orderedLines: [TextLine]? = nil) {
+    public init(pageIndex: Int, rotationDegrees: Int = 0, regions: [LayoutRegion], orderedLines: [TextLine]? = nil) {
         self.pageIndex = pageIndex
+        self.rotationDegrees = rotationDegrees
         self.regions = regions
         self.orderedLineProjection = orderedLines
     }

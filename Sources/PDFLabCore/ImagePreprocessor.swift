@@ -4,7 +4,7 @@ import CoreImage
 public enum ImagePreprocessor {
     private static let context = CIContext(options: nil)
 
-    /// 灰度 + 对比度增强 + 去斜 + 降噪(CoreImage: CIColorControls/CIDocumentEnhancer 路径),仅供低置信度页重试用。
+    /// 灰度 + 对比度增强 + 降噪(CoreImage: CIColorControls/CIDocumentEnhancer 路径),仅供低置信度页重试用。
     public static func enhance(_ image: CGImage) -> CGImage {
         let input = CIImage(cgImage: image)
         let colorControlled = input.applyingFilter("CIColorControls", parameters: [

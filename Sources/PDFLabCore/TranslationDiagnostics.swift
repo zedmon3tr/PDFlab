@@ -50,6 +50,37 @@ public protocol TranslationDiagnosticSink: Sendable {
     func record(_ event: TranslationDiagnosticEvent) async
 }
 
+public struct OCRRotationDiagnosticEvent: Codable, Equatable, Sendable {
+    public let timestamp: Date
+    public let stage: String
+    public let pageIndex: Int
+    public let attemptedDegrees: [Int]
+    public let baselineConfidence: Double
+    public let selectedDegrees: Int
+    public let selectedConfidence: Double
+
+    public init(
+        timestamp: Date = Date(),
+        pageIndex: Int,
+        attemptedDegrees: [Int],
+        baselineConfidence: Double,
+        selectedDegrees: Int,
+        selectedConfidence: Double
+    ) {
+        self.timestamp = timestamp
+        self.stage = "ocr-rotation"
+        self.pageIndex = pageIndex
+        self.attemptedDegrees = attemptedDegrees
+        self.baselineConfidence = baselineConfidence
+        self.selectedDegrees = selectedDegrees
+        self.selectedConfidence = selectedConfidence
+    }
+}
+
+public protocol OCRRotationDiagnosticSink: Sendable {
+    func record(_ event: OCRRotationDiagnosticEvent) async
+}
+
 enum TranslationDiagnosticLocation {
     static func resolveProjectRoot(
         bundleURL: URL = Bundle.main.bundleURL,
@@ -95,10 +126,25 @@ public enum TranslationDiagnostics {
     public static func prepareDirectory() async -> URL? { await fileLog?.prepareDirectory() }
 }
 
+public enum OCRRotationDiagnostics {
+    public static let shared: any OCRRotationDiagnosticSink = {
+        let executable = CommandLine.arguments.first ?? ""
+        if ProcessInfo.processInfo.environment["PDFLAB_DISABLE_DIAGNOSTICS"] == "1"
+            || executable.contains("PackageTests") || executable.contains(".xctest") {
+            return DisabledOCRRotationDiagnosticSink()
+        }
+        if let fileLog = TranslationDiagnostics.fileLog { return fileLog }
+        return DisabledOCRRotationDiagnosticSink()
+    }()
+}
+
 private struct DisabledTranslationDiagnosticSink: TranslationDiagnosticSink {
     func record(_ event: TranslationDiagnosticEvent) async {}
 }
-actor TranslationDiagnosticFileLog: TranslationDiagnosticSink {
+private struct DisabledOCRRotationDiagnosticSink: OCRRotationDiagnosticSink {
+    func record(_ event: OCRRotationDiagnosticEvent) async {}
+}
+actor TranslationDiagnosticFileLog: TranslationDiagnosticSink, OCRRotationDiagnosticSink {
     private let url: URL
     private let maxBytes: Int
     private let maxArchives: Int
@@ -124,6 +170,14 @@ actor TranslationDiagnosticFileLog: TranslationDiagnosticSink {
     }
 
     func record(_ event: TranslationDiagnosticEvent) async {
+        append(event)
+    }
+
+    func record(_ event: OCRRotationDiagnosticEvent) async {
+        append(event)
+    }
+
+    private func append<T: Encodable>(_ event: T) {
         guard var data = try? encoder.encode(event) else { return }
         data.append(0x0A)
         _ = prepareDirectory()

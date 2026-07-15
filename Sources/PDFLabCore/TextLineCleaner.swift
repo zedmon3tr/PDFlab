@@ -130,7 +130,12 @@ public enum TextLineCleaner {
                 removedIndexes.contains(projectionOffset + localIndex) ? nil : line
             }
             projectionOffset += pageLines.count
-            return PageLayout(pageIndex: layout.pageIndex, regions: regions, orderedLines: projection)
+            return PageLayout(
+                pageIndex: layout.pageIndex,
+                rotationDegrees: layout.rotationDegrees,
+                regions: regions,
+                orderedLines: projection
+            )
         }
         summary.pageNumbers = pageNumberIndexes.count
         summary.repeatedEdgeLines = repeatedEdgeIndexes.count

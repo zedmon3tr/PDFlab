@@ -47,4 +47,41 @@ public enum PageRasterizer {
 
         return context.makeImage()
     }
+
+    /// Returns a new image rotated clockwise by a right angle.
+    public static func rotated(_ image: CGImage, clockwiseDegrees: Int) -> CGImage? {
+        let degrees = ((clockwiseDegrees % 360) + 360) % 360
+        guard degrees == 0 || degrees == 90 || degrees == 180 || degrees == 270 else { return nil }
+        if degrees == 0 { return image }
+
+        let swapsDimensions = degrees == 90 || degrees == 270
+        let width = swapsDimensions ? image.height : image.width
+        let height = swapsDimensions ? image.width : image.height
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: image.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        switch degrees {
+        case 90:
+            context.translateBy(x: 0, y: CGFloat(height))
+            context.rotate(by: -.pi / 2)
+        case 180:
+            context.translateBy(x: CGFloat(width), y: CGFloat(height))
+            context.rotate(by: .pi)
+        case 270:
+            context.translateBy(x: CGFloat(width), y: 0)
+            context.rotate(by: .pi / 2)
+        default:
+            break
+        }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return context.makeImage()
+    }
 }
