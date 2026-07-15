@@ -7,10 +7,10 @@ import CoreGraphics
 enum PageReadingOrder {
     static func order(_ lines: [TextLine]) -> [TextLine] {
         guard lines.count > 1 else { return lines }
-        return promotingSupportedLeftSidebar(in: recursiveOrder(lines, depth: 0))
+        return recursiveOrder(lines, depth: 0)
     }
 
-    static func layout(_ lines: [TextLine], pageIndex: Int) -> PageLayout {
+    static func layout(_ lines: [TextLine], pageIndex: Int, orderedLines: [TextLine]? = nil) -> PageLayout {
         let groups = recursiveRegions(lines, depth: 0)
         let regions = groups.enumerated().map { index, group in
             let ordered = orderByBands(group)
@@ -23,7 +23,7 @@ enum PageReadingOrder {
                 blocks: [LayoutBlock(id: blockID, kind: .text, lines: ordered)]
             )
         }
-        return PageLayout(pageIndex: pageIndex, regions: regions, orderedLines: order(lines))
+        return PageLayout(pageIndex: pageIndex, regions: regions, orderedLines: orderedLines ?? order(lines))
     }
 
     private static func recursiveRegions(_ lines: [TextLine], depth: Int) -> [[TextLine]] {
@@ -73,20 +73,6 @@ enum PageReadingOrder {
             }
         }
         return orderByBands(lines)
-    }
-
-    /// A dense, substantially narrower left sidebar is an independent reading
-    /// region even when its gutter is too narrow for the conservative XY-cut.
-    /// Equal-width narrow-gutter columns intentionally stay in legacy band order.
-    private static func promotingSupportedLeftSidebar(in lines: [TextLine]) -> [TextLine] {
-        guard lines.count >= 8 else { return lines }
-        let medianWidth = median(lines.map { max($0.bbox.width, 0.001) })
-        let sidebar = lines.filter { $0.bbox.minX < 0.2 && $0.bbox.width <= medianWidth * 0.6 }
-        guard sidebar.count >= 4 else { return lines }
-        let pageHeading = lines.prefix { $0.bbox.maxY >= 0.9 }
-        let headingCount = pageHeading.count
-        let remaining = lines.dropFirst(headingCount).filter { !sidebar.contains($0) }
-        return Array(pageHeading) + sidebar + remaining
     }
 
     private static func largestHorizontalCut(in lines: [TextLine], minimumGap: CGFloat) -> CGFloat? {

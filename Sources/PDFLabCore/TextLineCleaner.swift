@@ -38,6 +38,26 @@ public struct CleanedPageLayouts: Equatable, Sendable {
 
 /// 聚段前的保守清洗。只移除能从位置与文本/置信度同时确认的非正文行。
 public enum TextLineCleaner {
+    private struct LineOccurrenceKey: Hashable {
+        var text: String
+        var pageIndex: Int
+        var minX: UInt64
+        var minY: UInt64
+        var width: UInt64
+        var height: UInt64
+        var confidence: UInt64?
+
+        init(_ line: TextLine) {
+            text = line.text
+            pageIndex = line.pageIndex
+            minX = Double(line.bbox.minX).bitPattern
+            minY = Double(line.bbox.minY).bitPattern
+            width = Double(line.bbox.width).bitPattern
+            height = Double(line.bbox.height).bitPattern
+            confidence = line.confidence?.bitPattern
+        }
+    }
+
     public static func clean(_ lines: [TextLine]) -> CleanedTextLines {
         let pages = Dictionary(grouping: lines, by: \.pageIndex)
         let layouts = pages.keys.sorted().map { PageReadingOrder.layout(pages[$0] ?? [], pageIndex: $0) }
@@ -53,18 +73,25 @@ public enum TextLineCleaner {
         var summary = TextCleanupSummary()
         var removedIndexes = pageNumberIndexes.union(repeatedEdgeIndexes)
         for index in ordered.indices where isOCRJunk(ordered[index]) { removedIndexes.insert(index) }
-        var matchedIndexes: Set<Int> = []
+        var occurrenceQueues: [LineOccurrenceKey: [Int]] = [:]
+        for (index, line) in ordered.enumerated() {
+            occurrenceQueues[LineOccurrenceKey(line), default: []].append(index)
+        }
+        var occurrenceCursors: [LineOccurrenceKey: Int] = [:]
         var projectionOffset = 0
         let cleanedLayouts = layouts.map { layout in
             let regions = layout.regions.compactMap { region -> LayoutRegion? in
                 let blocks = region.blocks.compactMap { block -> LayoutBlock? in
                     var retained: [TextLine] = []
                     for line in block.lines {
-                        guard let lineIndex = ordered.indices.first(where: { !matchedIndexes.contains($0) && ordered[$0] == line }) else {
+                        let key = LineOccurrenceKey(line)
+                        let cursor = occurrenceCursors[key, default: 0]
+                        guard let queue = occurrenceQueues[key], cursor < queue.count else {
                             retained.append(line)
                             continue
                         }
-                        matchedIndexes.insert(lineIndex)
+                        let lineIndex = queue[cursor]
+                        occurrenceCursors[key] = cursor + 1
                         if !removedIndexes.contains(lineIndex) { retained.append(line) }
                     }
                     guard !retained.isEmpty else { return nil }

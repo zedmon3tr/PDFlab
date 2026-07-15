@@ -8,7 +8,7 @@ public struct PageExtraction: Sendable {
 
     public init(pageIndex: Int, lines: [TextLine], isScanned: Bool) {
         self.pageIndex = pageIndex
-        self.layout = PageReadingOrder.layout(lines, pageIndex: pageIndex)
+        self.layout = PageReadingOrder.layout(lines, pageIndex: pageIndex, orderedLines: lines)
         self.isScanned = isScanned
     }
 
@@ -44,8 +44,10 @@ public enum PDFTextExtractor {
 
         let pageBounds = page.bounds(for: .mediaBox)
         if let visualLines = visualTextLines(on: page, content: content, pageBounds: pageBounds, pageIndex: pageIndex) {
+            let orderedLines = PageReadingOrder.order(visualLines)
             return PageExtraction(
-                layout: PageReadingOrder.layout(visualLines, pageIndex: pageIndex),
+                pageIndex: pageIndex,
+                lines: orderedLines,
                 isScanned: visualLines.isEmpty
             )
         }
