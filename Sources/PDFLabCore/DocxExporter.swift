@@ -74,7 +74,7 @@ public struct DocxExporter: Exporter {
     private static func renderDocumentXML(_ doc: ComposedDocument) -> String {
         var body = ""
         var lastBreakIndex = 0
-        for block in doc.blocks {
+        for (index, block) in doc.blocks.enumerated() {
             switch block {
             case .pageBreak(let pageIndex):
                 // 按 pageIndex 差值补分页符:空白源页保留为空白输出页,
@@ -84,10 +84,18 @@ public struct DocxExporter: Exporter {
                 for _ in 0..<breaks {
                     body += "<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>"
                 }
-            case .sourceText(let text):
-                body += paragraphXML(for: text)
-            case .translatedText(let text):
-                body += paragraphXML(for: text)
+            case .sourceText(let textBlock):
+                body += paragraphXML(
+                    for: textBlock,
+                    source: true,
+                    spacingAfter: ExportTypography.spacingAfter(blockAt: index, in: doc.blocks)
+                )
+            case .translatedText(let textBlock):
+                body += paragraphXML(
+                    for: textBlock,
+                    source: false,
+                    spacingAfter: ExportTypography.spacingAfter(blockAt: index, in: doc.blocks)
+                )
             }
         }
 
@@ -97,8 +105,23 @@ public struct DocxExporter: Exporter {
         """
     }
 
-    private static func paragraphXML(for text: String) -> String {
-        "<w:p><w:r><w:t>\(xmlEscape(text))</w:t></w:r></w:p>"
+    private static func paragraphXML(
+        for block: ComposedTextBlock,
+        source: Bool,
+        spacingAfter: ExportParagraphSpacing
+    ) -> String {
+        let layout = ExportTypography.layout(for: block.text, spacingAfter: spacingAfter)
+        let line = twips(layout.lineHeight)
+        let after = twips(layout.paragraphSpacing)
+        let indent = layout.firstLineIndent > 0
+            ? "<w:ind w:firstLine=\"\(twips(layout.firstLineIndent))\"/>"
+            : ""
+        let color = source ? "<w:color w:val=\"4D4D4D\"/>" : "<w:color w:val=\"000000\"/>"
+        return "<w:p><w:pPr><w:spacing w:line=\"\(line)\" w:lineRule=\"exact\" w:after=\"\(after)\"/>\(indent)<w:jc w:val=\"left\"/></w:pPr><w:r><w:rPr><w:sz w:val=\"24\"/>\(color)</w:rPr><w:t>\(xmlEscape(block.text))</w:t></w:r></w:p>"
+    }
+
+    private static func twips(_ points: CGFloat) -> Int {
+        Int((points * 20).rounded())
     }
 
     private static func xmlEscape(_ text: String) -> String {

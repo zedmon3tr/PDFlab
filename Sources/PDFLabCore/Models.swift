@@ -182,11 +182,35 @@ public struct ExportOptions: Equatable, Sendable {
     }
 }
 
+public enum ComposedTextKind: Equatable, Sendable {
+    case body
+}
+
+public struct ComposedTextBlock: Equatable, Sendable {
+    public var text: String
+    public var groupID: TranslationUnitID?
+    public var kind: ComposedTextKind
+
+    public init(text: String, groupID: TranslationUnitID? = nil, kind: ComposedTextKind = .body) {
+        self.text = text
+        self.groupID = groupID
+        self.kind = kind
+    }
+}
+
 /// 组装后待渲染的块(任务13产出,任务14-16消费)。
 public enum ComposedBlock: Equatable, Sendable {
     case pageBreak(pageIndex: Int)        // 按页模式的页边界(pageIndex 为新页,0 计)
-    case sourceText(String)
-    case translatedText(String)
+    case sourceText(ComposedTextBlock)
+    case translatedText(ComposedTextBlock)
+
+    public static func sourceText(_ text: String) -> ComposedBlock {
+        .sourceText(ComposedTextBlock(text: text))
+    }
+
+    public static func translatedText(_ text: String) -> ComposedBlock {
+        .translatedText(ComposedTextBlock(text: text))
+    }
 }
 public struct ComposedDocument: Equatable, Sendable {
     public var blocks: [ComposedBlock]

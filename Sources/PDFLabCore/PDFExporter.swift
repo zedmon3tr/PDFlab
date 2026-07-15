@@ -4,29 +4,29 @@ import CoreGraphics
 /// 将 ComposedDocument 渲染为 PDF:A4 页面,CoreText 逐块排版,列满自动换页,
 /// 遇 .pageBreak 按页号差值换页,空白源页保留为空白输出页(按页对应模式)。
 public struct PDFExporter: Exporter {
-    private let pageWidth: CGFloat = 595
-    private let pageHeight: CGFloat = 842
-    private let margin: CGFloat = 54
-    private let fontSize: CGFloat = 12
-
     public init() {}
 
     public func export(_ doc: ComposedDocument, to url: URL, uiLanguageChinese: Bool) throws {
-        var mediaBox = CGRect(x: 0, y: 0, width: pageWidth, height: pageHeight)
+        var mediaBox = CGRect(
+            x: 0,
+            y: 0,
+            width: ExportTypography.pageWidth,
+            height: ExportTypography.pageHeight
+        )
 
         guard let context = CGContext(url as CFURL, mediaBox: &mediaBox, nil) else {
             throw PDFLabError.exportWriteFailed("Unable to create PDF context for \(url.path)")
         }
 
-        let contentWidth = pageWidth - 2 * margin
-        let contentTop = pageHeight - margin
-        let contentBottom = margin
+        let contentWidth = ExportTypography.contentWidth
+        let contentTop = ExportTypography.pageHeight - ExportTypography.margin
+        let contentBottom = ExportTypography.margin
 
         let state = PageState(context: context, contentTop: contentTop)
         state.beginPage()
         var lastBreakIndex = 0
 
-        for block in doc.blocks {
+        for (index, block) in doc.blocks.enumerated() {
             switch block {
             case .pageBreak(let pageIndex):
                 // 按页对应:按 pageIndex 差值换页,空白源页成为真实空白输出页,
@@ -42,18 +42,20 @@ public struct PDFExporter: Exporter {
                         state.beginPage()
                     }
                 }
-            case .sourceText(let text):
+            case .sourceText(let textBlock):
                 drawBlock(
-                    text: text,
-                    grayLevel: 0.35,
+                    text: textBlock.text,
+                    grayLevel: ExportTypography.sourceGray,
+                    spacingAfter: ExportTypography.spacingAfter(blockAt: index, in: doc.blocks),
                     contentWidth: contentWidth,
                     contentBottom: contentBottom,
                     state: state
                 )
-            case .translatedText(let text):
+            case .translatedText(let textBlock):
                 drawBlock(
-                    text: text,
+                    text: textBlock.text,
                     grayLevel: 0.0,
+                    spacingAfter: ExportTypography.spacingAfter(blockAt: index, in: doc.blocks),
                     contentWidth: contentWidth,
                     contentBottom: contentBottom,
                     state: state
@@ -93,72 +95,62 @@ public struct PDFExporter: Exporter {
     private func drawBlock(
         text: String,
         grayLevel: CGFloat,
+        spacingAfter: ExportParagraphSpacing,
         contentWidth: CGFloat,
         contentBottom: CGFloat,
         state: PageState
     ) {
         guard !text.isEmpty else { return }
 
-        let attributed = attributedString(for: text, grayLevel: grayLevel)
+        let attributed = Self.attributedString(
+            for: text,
+            grayLevel: grayLevel,
+            spacingAfter: spacingAfter
+        )
         let framesetter = CTFramesetterCreateWithAttributedString(attributed)
         var charIndex = 0
         let totalLength = attributed.length
-
-        // 段前留一点垂直间距(除非页面刚开始)。
-        if !state.pageIsEmpty {
-            state.cursorY -= fontSize * 0.6
-        }
 
         while charIndex < totalLength {
             var availableHeight = state.cursorY - contentBottom
 
             // 当前页剩余空间过小,直接换页再排版。
-            if availableHeight < fontSize * 1.2 {
+            if availableHeight < ExportTypography.lineHeight {
                 state.endPage()
                 state.beginPage()
                 availableHeight = state.cursorY - contentBottom
             }
 
             let range = CFRangeMake(charIndex, totalLength - charIndex)
-            let constraint = CGSize(width: contentWidth, height: availableHeight)
-            var consumedRange = CFRangeMake(0, 0)
-
-            let suggestedSize = withUnsafeMutablePointer(to: &consumedRange) { fitRangePtr in
-                CTFramesetterSuggestFrameSizeWithConstraints(
-                    framesetter, range, nil, constraint, fitRangePtr
-                )
-            }
-            var frameHeight = suggestedSize.height
-
-            // 如果一个字符都放不下(极端情况,比如剩余高度太小),强制换页重试。
-            if consumedRange.length == 0 {
-                state.endPage()
-                state.beginPage()
-                availableHeight = state.cursorY - contentBottom
-                let retryConstraint = CGSize(width: contentWidth, height: availableHeight)
-                let retrySize = withUnsafeMutablePointer(to: &consumedRange) { fitRangePtr in
-                    CTFramesetterSuggestFrameSizeWithConstraints(
-                        framesetter, range, nil, retryConstraint, fitRangePtr
-                    )
-                }
-                frameHeight = retrySize.height
-                if consumedRange.length == 0 {
-                    // 仍然放不下(理论上不会发生),跳出避免死循环。
-                    break
-                }
-            }
-
-            let frameOriginY = state.cursorY - frameHeight
             let path = CGPath(
-                rect: CGRect(x: margin, y: frameOriginY, width: contentWidth, height: frameHeight),
+                rect: CGRect(
+                    x: ExportTypography.margin,
+                    y: contentBottom,
+                    width: contentWidth,
+                    height: availableHeight
+                ),
                 transform: nil
             )
-            let ctFrame = CTFramesetterCreateFrame(framesetter, consumedRange, path, nil)
+            let ctFrame = CTFramesetterCreateFrame(framesetter, range, path, nil)
+            let visibleRange = CTFrameGetVisibleStringRange(ctFrame)
+            if visibleRange.length == 0, !state.pageIsEmpty {
+                state.endPage()
+                state.beginPage()
+                continue
+            }
+            guard visibleRange.length > 0 else { break }
             CTFrameDraw(ctFrame, state.context)
 
-            state.cursorY = frameOriginY
+            let usedSize = CTFramesetterSuggestFrameSizeWithConstraints(
+                framesetter,
+                visibleRange,
+                nil,
+                CGSize(width: contentWidth, height: .greatestFiniteMagnitude),
+                nil
+            )
+            state.cursorY -= min(usedSize.height, availableHeight)
             state.pageIsEmpty = false
-            charIndex += consumedRange.length
+            charIndex = visibleRange.location + visibleRange.length
 
             if charIndex < totalLength {
                 state.endPage()
@@ -167,13 +159,62 @@ public struct PDFExporter: Exporter {
         }
     }
 
-    private func attributedString(for text: String, grayLevel: CGFloat) -> NSAttributedString {
-        let font = CTFontCreateUIFontForLanguage(.system, fontSize, nil)
-            ?? CTFontCreateWithName("Helvetica" as CFString, fontSize, nil)
+    static func attributedString(
+        for text: String,
+        grayLevel: CGFloat,
+        spacingAfter: ExportParagraphSpacing
+    ) -> NSAttributedString {
+        let font = CTFontCreateUIFontForLanguage(.system, ExportTypography.fontSize, nil)
+            ?? CTFontCreateWithName("Helvetica" as CFString, ExportTypography.fontSize, nil)
         let color = CGColor(gray: grayLevel, alpha: 1.0)
+        let layout = ExportTypography.layout(for: text, spacingAfter: spacingAfter)
+        var alignment = CTTextAlignment.left
+        var minimumLineHeight = layout.lineHeight
+        var maximumLineHeight = layout.lineHeight
+        var paragraphSpacing = layout.paragraphSpacing
+        var firstLineIndent = layout.firstLineIndent
+        let paragraphStyle = withUnsafePointer(to: &alignment) { alignmentPointer in
+            withUnsafePointer(to: &minimumLineHeight) { minimumPointer in
+                withUnsafePointer(to: &maximumLineHeight) { maximumPointer in
+                    withUnsafePointer(to: &paragraphSpacing) { spacingPointer in
+                        withUnsafePointer(to: &firstLineIndent) { indentPointer in
+                            let settings = [
+                                CTParagraphStyleSetting(
+                                    spec: .alignment,
+                                    valueSize: MemoryLayout<CTTextAlignment>.size,
+                                    value: alignmentPointer
+                                ),
+                                CTParagraphStyleSetting(
+                                    spec: .minimumLineHeight,
+                                    valueSize: MemoryLayout<CGFloat>.size,
+                                    value: minimumPointer
+                                ),
+                                CTParagraphStyleSetting(
+                                    spec: .maximumLineHeight,
+                                    valueSize: MemoryLayout<CGFloat>.size,
+                                    value: maximumPointer
+                                ),
+                                CTParagraphStyleSetting(
+                                    spec: .paragraphSpacing,
+                                    valueSize: MemoryLayout<CGFloat>.size,
+                                    value: spacingPointer
+                                ),
+                                CTParagraphStyleSetting(
+                                    spec: .firstLineHeadIndent,
+                                    valueSize: MemoryLayout<CGFloat>.size,
+                                    value: indentPointer
+                                ),
+                            ]
+                            return CTParagraphStyleCreate(settings, settings.count)
+                        }
+                    }
+                }
+            }
+        }
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: color,
+            NSAttributedString.Key(rawValue: kCTParagraphStyleAttributeName as String): paragraphStyle,
         ]
         return NSAttributedString(string: text, attributes: attributes)
     }

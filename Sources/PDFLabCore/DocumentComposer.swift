@@ -46,12 +46,18 @@ public enum DocumentComposer {
 
             switch effectiveContent {
             case .translationOnly:
-                blocks.append(.translatedText(paragraph.textWithListMarker(translationsByID[unitID] ?? "")))
+                blocks.append(.translatedText(.init(
+                    text: paragraph.textWithListMarker(translationsByID[unitID] ?? ""),
+                    groupID: unitID
+                )))
             case .bilingual:
-                blocks.append(.sourceText(paragraph.displayText))
-                blocks.append(.translatedText(paragraph.textWithListMarker(translationsByID[unitID] ?? "")))
+                blocks.append(.sourceText(.init(text: paragraph.displayText, groupID: unitID)))
+                blocks.append(.translatedText(.init(
+                    text: paragraph.textWithListMarker(translationsByID[unitID] ?? ""),
+                    groupID: unitID
+                )))
             case .extractionOnly:
-                blocks.append(.sourceText(paragraph.displayText))
+                blocks.append(.sourceText(.init(text: paragraph.displayText, groupID: unitID)))
             }
         }
 

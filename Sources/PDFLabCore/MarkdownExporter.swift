@@ -17,10 +17,10 @@ public struct MarkdownExporter: Exporter {
                     ? "## 第 \(pageIndex + 1) 页"
                     : "## Page \(pageIndex + 1)"
                 output += heading + "\n\n"
-            case .sourceText(let text):
-                output += text + "\n\n"
-            case .translatedText(let text):
-                output += text + "\n\n"
+            case .sourceText(let block):
+                output += block.text + "\n\n"
+            case .translatedText(let block):
+                output += block.text + "\n\n"
             }
         }
         if output.hasSuffix("\n\n") {

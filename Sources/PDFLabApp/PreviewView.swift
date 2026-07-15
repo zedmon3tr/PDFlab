@@ -138,22 +138,22 @@ struct PreviewRow: Equatable {
             case .pageBreak(let pageIndex):
                 flushPageContent()
                 rows.append(PreviewRow(pageIndex: pageIndex))
-            case .sourceText(let text):
+            case .sourceText(let block):
                 if content == .bilingual {
                     if let source = pendingSource {
                         pageSources.append(source)
                     }
-                    pendingSource = text
+                    pendingSource = block.text
                 } else {
-                    pageSources.append(text)
+                    pageSources.append(block.text)
                 }
-            case .translatedText(let text):
+            case .translatedText(let block):
                 if content == .bilingual {
                     appendPendingSource()
-                    pageTranslations.append(text)
+                    pageTranslations.append(block.text)
                     pendingSource = nil
                 } else {
-                    pageTranslations.append(text)
+                    pageTranslations.append(block.text)
                 }
             }
         }
