@@ -118,7 +118,6 @@ public struct DocxExporter: Exporter {
         spacingAfter: ExportParagraphSpacing
     ) -> String {
         let layout = ExportTypography.layout(for: block.text, spacingAfter: spacingAfter)
-        let line = twips(layout.lineHeight)
         let after = twips(layout.paragraphSpacing)
         let indent = layout.firstLineIndent > 0
             ? "<w:ind w:firstLine=\"\(twips(layout.firstLineIndent))\"/>"
@@ -139,6 +138,7 @@ public struct DocxExporter: Exporter {
             style = ""
             fontSize = 24
         }
+        let line = twips(max(layout.lineHeight, CGFloat(fontSize) / 2 * 1.35))
         return "<w:p><w:pPr>\(style)<w:spacing w:line=\"\(line)\" w:lineRule=\"exact\" w:after=\"\(after)\"/>\(indent)<w:jc w:val=\"left\"/></w:pPr><w:r><w:rPr><w:sz w:val=\"\(fontSize)\"/>\(color)</w:rPr><w:t\(spaceAttribute)>\(xmlEscape(block.text))</w:t></w:r></w:p>"
     }
 

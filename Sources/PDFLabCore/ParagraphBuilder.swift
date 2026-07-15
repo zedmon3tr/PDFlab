@@ -45,12 +45,18 @@ public enum ParagraphBuilder {
         from layouts: [PageLayout],
         assignsStableMetadata: Bool
     ) -> [SourceParagraph] {
-        let allLines = layouts.flatMap { $0.regions.flatMap(\.flattenedLines) }
-        let baseline = documentBodyLineHeight(in: allLines)
-        let headingLevels = documentHeadingLevels(in: allLines, baseline: baseline)
+        let baselineLines = layouts.flatMap { layout in
+            layout.regions.filter { $0.kind == .body || $0.kind == .list }.flatMap { region in
+                region.blocks.filter { $0.kind != .title && $0.kind != .tableRow }.flatMap(\.lines)
+            }
+        }
+        let headingLines = layouts.flatMap { $0.regions.filter { $0.kind != .table && $0.kind != .header && $0.kind != .footer }.flatMap(\.flattenedLines) }
+        let baseline = documentBodyLineHeight(in: baselineLines)
+        let headingLevels = documentHeadingLevels(in: headingLines, baseline: baseline)
         var paragraphs: [SourceParagraph] = []
 
         for layout in layouts {
+            let pageBaseline = pageBodyLineHeight(in: layout, documentBaseline: baseline)
             var pageBody: [SourceParagraph] = []
             var pageFootnotes: [SourceParagraph] = []
             for region in layout.regions where region.kind != .table {
@@ -58,18 +64,18 @@ public enum ParagraphBuilder {
                 let threshold = adaptiveGapThreshold(for: verticalGaps(
                     in: regionLines,
                     regionKind: region.kind,
-                    baseline: baseline,
+                    baseline: pageBaseline,
                     headingLevels: headingLevels
                 ))
                 let bodyLines = region.blocks.filter { $0.kind != .title }.flatMap(\.lines)
-                let leftEdge = modalEdge(bodyLines.map(\.bbox.minX), tolerance: baseline * 0.5)
-                let rightEdge = modalEdge(bodyLines.map(\.bbox.maxX), tolerance: baseline * 0.5)
+                let leftEdge = modalEdge(bodyLines.map(\.bbox.minX), tolerance: pageBaseline * 0.5)
+                let rightEdge = modalEdge(bodyLines.map(\.bbox.maxX), tolerance: pageBaseline * 0.5)
 
                 for block in region.blocks where block.kind != .tableRow {
                     let built = buildBlock(
                         block,
                         region: region,
-                        baseline: baseline,
+                        baseline: pageBaseline,
                         headingLevels: headingLevels,
                         gapThreshold: threshold,
                         leftEdge: leftEdge,
@@ -108,6 +114,14 @@ public enum ParagraphBuilder {
         }
         var result: [SourceParagraph] = []
         var current: Pending?
+        let systemKind: SourceParagraphKind? = region.source == .system ? {
+            switch block.kind {
+            case .title: return .heading(level: 1)
+            case .listItem: return .listItem(marker: ParagraphListMarkerParser.splitLeadingMarker(in: block.lines.first?.text ?? "")?.marker ?? "")
+            case .paragraph: return .body
+            case .text, .tableRow: return nil
+            }
+        }() : nil
 
         func isShort(_ box: CGRect) -> Bool {
             guard let rightEdge else { return false }
@@ -144,7 +158,7 @@ public enum ParagraphBuilder {
         var index = 0
         while index < block.lines.count {
             let line = block.lines[index]
-            let lineKind = semanticKind(
+            let lineKind = systemKind ?? semanticKind(
                 for: line,
                 blockKind: block.kind,
                 regionKind: region.kind,
@@ -152,9 +166,14 @@ public enum ParagraphBuilder {
                 headingLevels: headingLevels
             )
             let allowsListParsing: Bool
-            switch lineKind {
-            case .body, .listItem: allowsListParsing = true
-            case .heading, .footnote: allowsListParsing = false
+            if let systemKind {
+                if case .listItem = systemKind { allowsListParsing = true }
+                else { allowsListParsing = false }
+            } else {
+                switch lineKind {
+                case .body, .listItem: allowsListParsing = true
+                case .heading, .footnote: allowsListParsing = false
+                }
             }
             if allowsListParsing,
                let standalone = ParagraphListMarkerParser.standaloneMarker(in: line.text),
@@ -188,10 +207,20 @@ public enum ParagraphBuilder {
                 continue
             }
             let sameVisualLine = isSameVisualLineContinuation(previous: pending.lastBox, next: line.bbox)
-            let semanticBoundary = pending.kind != lineKind
-            let startsIndented = leftEdge.map { line.bbox.minX - $0 > max(line.bbox.height, baseline) } ?? false
-            let previousShort = isShort(pending.lastBox)
-            let continues = sameVisualLine || (!semanticBoundary && !startsIndented && !previousShort && isNextLineContinuation(
+            var effectiveKind = lineKind
+            if case .listItem = pending.kind, lineKind == .body { effectiveKind = pending.kind }
+            if pending.kind == .footnote,
+               lineKind == .body,
+               line.bbox.minY <= 0.12,
+               line.bbox.height <= baseline * 0.85 {
+                effectiveKind = .footnote
+            }
+            let semanticBoundary = pending.kind != effectiveKind
+            let appliesBodyGeometry = pending.kind == .body && effectiveKind == .body
+            let startsIndented = appliesBodyGeometry && (leftEdge.map { line.bbox.minX - $0 > max(line.bbox.height, baseline) } ?? false)
+            let previousShort = appliesBodyGeometry && isShort(pending.lastBox)
+            let preservesSystemBlock = systemKind != nil
+            let continues = sameVisualLine || preservesSystemBlock || (!semanticBoundary && !startsIndented && !previousShort && isNextLineContinuation(
                 previous: pending.lastBox,
                 next: line.bbox,
                 gapThreshold: gapThreshold
@@ -217,24 +246,18 @@ public enum ParagraphBuilder {
     public static func mergeAcrossPages(_ paragraphs: [SourceParagraph]) -> [SourceParagraph] {
         var out: [SourceParagraph] = []
         for paragraph in paragraphs {
-            var candidateIndex = out.indices.last
-            while let index = candidateIndex, out[index].kind == .footnote {
-                candidateIndex = index > out.startIndex ? out.index(before: index) : nil
-            }
-            let candidate = candidateIndex.map { ($0, out[$0]) }
-            if let (candidateIndex, initialPrevious) = candidate,
-               initialPrevious.kind == .body, paragraph.kind == .body,
-               !initialPrevious.lastLineIsShort,
-               initialPrevious.pageIndex < paragraph.pageIndex,
-               let lastCharacter = initialPrevious.text.last, !sentenceEnders.contains(lastCharacter),
+            if var previous = out.last,
+               previous.kind == .body, paragraph.kind == .body,
+               !previous.lastLineIsShort,
+               previous.pageIndex < paragraph.pageIndex,
+               let lastCharacter = previous.text.last, !sentenceEnders.contains(lastCharacter),
                let firstCharacter = paragraph.text.first, isContinuation(firstCharacter) {
-                var previous = initialPrevious
                 previous.text = join(previous.text, paragraph.text)
                 previous.sourceBlockIDs.append(contentsOf: paragraph.sourceBlockIDs.filter { !previous.sourceBlockIDs.contains($0) })
                 previous.lastLineBBox = paragraph.lastLineBBox
                 previous.regionBodyRightEdge = paragraph.regionBodyRightEdge
                 previous.lastLineIsShort = paragraph.lastLineIsShort
-                out[candidateIndex] = previous
+                out[out.count - 1] = previous
             } else {
                 out.append(paragraph)
             }
@@ -277,10 +300,40 @@ public enum ParagraphBuilder {
     }
 
     private static func documentBodyLineHeight(in lines: [TextLine]) -> CGFloat {
-        let heights = lines.map { max($0.bbox.height, 0.001) }.sorted()
-        guard !heights.isEmpty else { return 0.03 }
-        // 标题通常是少数大字号；中位数是保守的文档正文基线。
-        return median(heights)
+        let central = lines.filter { $0.bbox.minY > 0.12 && $0.bbox.maxY < 0.95 }
+        let heights = (central.isEmpty ? lines : central).map { max($0.bbox.height, 0.001) }
+        return lineHeightMode(heights)?.height ?? 0.03
+    }
+
+    private static func pageBodyLineHeight(in layout: PageLayout, documentBaseline: CGFloat) -> CGFloat {
+        let heights = layout.regions.filter { $0.kind == .body || $0.kind == .list }.flatMap { region in
+            region.blocks.filter { $0.kind != .title && $0.kind != .tableRow }.flatMap(\.lines)
+        }.filter { $0.bbox.minY > 0.12 && $0.bbox.maxY < 0.95 }.map { max($0.bbox.height, 0.001) }
+        guard heights.count >= 6,
+              let mode = lineHeightMode(heights),
+              mode.count >= 3,
+              abs(mode.height - documentBaseline) <= documentBaseline * 0.15 else {
+            return documentBaseline
+        }
+        return mode.height
+    }
+
+    private static func lineHeightMode(_ values: [CGFloat]) -> (height: CGFloat, count: Int)? {
+        guard !values.isEmpty else { return nil }
+        let sorted = values.sorted()
+        var clusters: [[CGFloat]] = []
+        for value in sorted {
+            if let last = clusters.indices.last,
+               value - (clusters[last].last ?? value) <= max(value, clusters[last][0]) * 0.08 {
+                clusters[last].append(value)
+            } else {
+                clusters.append([value])
+            }
+        }
+        guard let best = clusters.max(by: {
+            $0.count == $1.count ? median($0) > median($1) : $0.count < $1.count
+        }) else { return nil }
+        return (median(best), best.count)
     }
 
     private static func documentHeadingLevels(in lines: [TextLine], baseline: CGFloat) -> [(height: CGFloat, level: Int)] {
@@ -333,11 +386,15 @@ public enum ParagraphBuilder {
 
     private static func modalEdge(_ values: [CGFloat], tolerance: CGFloat) -> CGFloat? {
         guard !values.isEmpty else { return nil }
-        var best: [CGFloat] = []
-        for candidate in values {
-            let group = values.filter { abs($0 - candidate) <= tolerance }
-            if group.count > best.count { best = group }
+        var groups: [[CGFloat]] = []
+        for value in values.sorted() {
+            if let last = groups.indices.last, value - (groups[last].last ?? value) <= tolerance {
+                groups[last].append(value)
+            } else {
+                groups.append([value])
+            }
         }
+        let best = groups.max { $0.count < $1.count } ?? []
         return best.count >= 2 ? median(best) : nil
     }
 
