@@ -24,7 +24,7 @@ public struct SourceParagraph: Equatable, Sendable {
     public var pageIndex: Int
     public var ocrConfidence: Double?   // nil = 来自文本层非 OCR
     public var listMarker: String?
-    public var translationUnitID: TranslationUnitID
+    public var translationUnitID: TranslationUnitID?
     public var sourceBlockIDs: [LayoutBlockID]
     public var firstLineBBox: CGRect?
     public var lastLineBBox: CGRect?
@@ -45,7 +45,7 @@ public struct SourceParagraph: Equatable, Sendable {
         self.sourceBlockIDs = sourceBlockIDs
         self.firstLineBBox = firstLineBBox
         self.lastLineBBox = lastLineBBox
-        self.translationUnitID = translationUnitID ?? Self.fallbackID(text: text, pageIndex: pageIndex)
+        self.translationUnitID = translationUnitID
     }
 
     public var displayText: String {
@@ -57,12 +57,15 @@ public struct SourceParagraph: Equatable, Sendable {
         return "\(listMarker) \(body)"
     }
 
-    private static func fallbackID(text: String, pageIndex: Int) -> TranslationUnitID {
-        var hash: UInt64 = 14_695_981_039_346_656_037
-        for byte in text.utf8 {
-            hash = (hash ^ UInt64(byte)) &* 1_099_511_628_211
-        }
-        return TranslationUnitID("paragraph:p\(pageIndex):\(String(hash, radix: 16))")
+}
+
+public struct SourceTableRow: Equatable, Sendable {
+    public var translationUnitID: TranslationUnitID
+    public var text: String
+
+    public init(translationUnitID: TranslationUnitID, text: String) {
+        self.translationUnitID = translationUnitID
+        self.text = text
     }
 }
 
@@ -70,9 +73,9 @@ public struct SourceTableRegion: Equatable, Sendable {
     public var translationUnitID: TranslationUnitID
     public var pageIndex: Int
     public var sourceBlockIDs: [LayoutBlockID]
-    public var rows: [String]
+    public var rows: [SourceTableRow]
 
-    public init(translationUnitID: TranslationUnitID, pageIndex: Int, sourceBlockIDs: [LayoutBlockID], rows: [String]) {
+    public init(translationUnitID: TranslationUnitID, pageIndex: Int, sourceBlockIDs: [LayoutBlockID], rows: [SourceTableRow]) {
         self.translationUnitID = translationUnitID
         self.pageIndex = pageIndex
         self.sourceBlockIDs = sourceBlockIDs
@@ -89,8 +92,7 @@ public enum ParsedBlock: Equatable, Sendable {
 public struct ParsedDocument: Equatable, Sendable {
     public var blocks: [ParsedBlock]
     public var paragraphs: [SourceParagraph] {
-        get { blocks.compactMap { if case let .paragraph(paragraph) = $0 { paragraph } else { nil } } }
-        set { blocks = newValue.map(ParsedBlock.paragraph) }
+        blocks.compactMap { if case let .paragraph(paragraph) = $0 { paragraph } else { nil } }
     }
     public var pageCount: Int
     public var lowQualityPages: [Int]   // 置信度兜底标记的页
@@ -106,6 +108,16 @@ public struct ParsedDocument: Equatable, Sendable {
         self.pageCount = pageCount
         self.lowQualityPages = lowQualityPages
         self.cleanupSummary = cleanupSummary
+    }
+}
+
+public struct TranslatedUnit: Equatable, Sendable {
+    public var id: TranslationUnitID
+    public var text: String
+
+    public init(id: TranslationUnitID, text: String) {
+        self.id = id
+        self.text = text
     }
 }
 

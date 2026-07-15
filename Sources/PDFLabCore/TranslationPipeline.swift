@@ -269,26 +269,30 @@ public final class TranslationPipeline: @unchecked Sendable {
         }
 
         // 阶段 5:分批翻译(每批 10 段)。extractionOnly 跳过。
-        var translations: [String] = []
+        let translationInputs = paragraphs.enumerated().map { index, paragraph in
+            (id: paragraph.translationUnitID ?? TranslationUnitID("compat-paragraph:\(index)"), paragraph: paragraph)
+        }
+        var translatedUnits: [TranslatedUnit] = []
         if input.options.content != .extractionOnly {
 #if DEBUG
             let runID = UUID()
 #endif
             var index = 0
-            while index < paragraphs.count {
+            while index < translationInputs.count {
                 try Task.checkCancellation()
-                let batch = Array(paragraphs[index..<min(index + Self.translationBatchSize, paragraphs.count)])
-                let texts = batch.map(\.text)
+                let batch = Array(translationInputs[index..<min(index + Self.translationBatchSize, translationInputs.count)])
+                let texts = batch.map(\.paragraph.text)
                 let batchNumber = index / Self.translationBatchSize + 1
-                let pageStart = (batch.first?.pageIndex ?? 0) + 1
-                let pageEnd = (batch.last?.pageIndex ?? 0) + 1
+                let pageStart = (batch.first?.paragraph.pageIndex ?? 0) + 1
+                let pageEnd = (batch.last?.paragraph.pageIndex ?? 0) + 1
 #if DEBUG
                 let started = Date()
                 let context = TranslationDiagnosticContext(runID: runID, batch: batchNumber, pageStart: pageStart, pageEnd: pageEnd)
                 do {
-                    translations += try await TranslationDiagnosticScope.$current.withValue(context) {
+                    let translated = try await TranslationDiagnosticScope.$current.withValue(context) {
                         try await engine.translate(texts, direction: direction)
                     }
+                    translatedUnits += zip(batch, translated).map { TranslatedUnit(id: $0.0.id, text: $0.1) }
                     await diagnostics.record(.init(runID: runID, engine: engine.id, stage: "batch-complete",
                         direction: direction, batch: batchNumber, pageStart: pageStart, pageEnd: pageEnd,
                         characterCount: texts.reduce(0) { $0 + $1.count },
@@ -302,7 +306,8 @@ public final class TranslationPipeline: @unchecked Sendable {
                     throw error
                 }
 #else
-                translations += try await engine.translate(texts, direction: direction)
+                let translated = try await engine.translate(texts, direction: direction)
+                translatedUnits += zip(batch, translated).map { TranslatedUnit(id: $0.0.id, text: $0.1) }
 #endif
                 progress(PipelineProgress(
                     stage: .translating,
@@ -318,7 +323,7 @@ public final class TranslationPipeline: @unchecked Sendable {
         progress(PipelineProgress(stage: .composing, currentPage: processingPageCount, totalPages: processingPageCount))
         let composed = DocumentComposer.compose(
             doc: parsed,
-            translations: translations,
+            translatedUnits: translatedUnits,
             options: input.options,
             direction: direction
         )

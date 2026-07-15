@@ -71,38 +71,102 @@ public struct OCRService: Sendable {
         request.textRecognitionOptions.useLanguageCorrection = true
 
         let observations = try await request.perform(on: image)
-        var lines: [TextLine] = []
+        var regions: [LayoutRegion] = []
 
         for observation in observations {
-            for paragraph in observation.document.paragraphs {
-                let text = paragraph.transcript
-                guard !text.isEmpty else { continue }
-
-                let confidence = paragraphConfidence(paragraph)
-                lines.append(TextLine(
-                    text: text,
-                    pageIndex: pageIndex,
-                    bbox: paragraph.boundingRegion.boundingBox.cgRect,
-                    confidence: confidence
-                ))
+            let document = observation.document
+            var occupied: [CGRect] = []
+            if let title = document.title, let region = systemTextRegion(
+                title, pageIndex: pageIndex, id: "system-p\(pageIndex)-title", regionKind: .title, blockKind: .title
+            ) {
+                regions.append(region)
+                occupied.append(region.bbox)
+            }
+            for (tableIndex, table) in document.tables.enumerated() {
+                let blocks = table.rows.enumerated().compactMap { rowIndex, cells -> LayoutBlock? in
+                    let lines = cells.flatMap { systemLines(from: $0.content.text, pageIndex: pageIndex) }
+                    guard !lines.isEmpty else { return nil }
+                    return LayoutBlock(id: .init("system-p\(pageIndex)-table\(tableIndex)-row\(rowIndex)"), kind: .tableRow, lines: lines)
+                }
+                guard !blocks.isEmpty else { continue }
+                let region = LayoutRegion(
+                    id: "system-p\(pageIndex)-table\(tableIndex)", kind: .table, source: .system,
+                    blocks: blocks, bbox: table.boundingRegion.boundingBox.cgRect
+                )
+                regions.append(region)
+                occupied.append(region.bbox)
+            }
+            for (listIndex, list) in document.lists.enumerated() {
+                let blocks = list.items.enumerated().compactMap { itemIndex, item -> LayoutBlock? in
+                    let lines = systemLines(from: item.content.text, pageIndex: pageIndex)
+                    guard !lines.isEmpty else { return nil }
+                    return LayoutBlock(id: .init("system-p\(pageIndex)-list\(listIndex)-item\(itemIndex)"), kind: .listItem, lines: lines)
+                }
+                guard !blocks.isEmpty else { continue }
+                let region = LayoutRegion(
+                    id: "system-p\(pageIndex)-list\(listIndex)", kind: .list, source: .system,
+                    blocks: blocks, bbox: list.boundingRegion.boundingBox.cgRect
+                )
+                regions.append(region)
+                occupied.append(region.bbox)
+            }
+            for (paragraphIndex, paragraph) in document.paragraphs.enumerated() {
+                let bounds = paragraph.boundingRegion.boundingBox.cgRect
+                guard !occupied.contains(where: { overlapRatio(bounds, $0) >= 0.5 }),
+                      let region = systemTextRegion(
+                        paragraph, pageIndex: pageIndex,
+                        id: "system-p\(pageIndex)-paragraph\(paragraphIndex)", regionKind: .body, blockKind: .paragraph
+                      ) else { continue }
+                regions.append(region)
             }
         }
-
-        let normalized = Self.normalizeLines(lines)
-        let blocks = normalized.enumerated().map { index, line in
-            LayoutBlock(id: .init("system-p\(pageIndex)-b\(index)"), kind: .paragraph, lines: [line])
+        regions.sort {
+            if $0.bbox.maxY != $1.bbox.maxY { return $0.bbox.maxY > $1.bbox.maxY }
+            return $0.bbox.minX < $1.bbox.minX
         }
-        return result(layout: Self.systemPageLayout(pageIndex: pageIndex, blocks: blocks))
+        return result(layout: PageLayout(pageIndex: pageIndex, regions: regions))
     }
 
     @available(macOS 26.0, *)
-    private func paragraphConfidence(_ paragraph: DocumentObservation.Container.Text) -> Double {
-        guard !paragraph.lines.isEmpty else {
-            // 0.9 is a fallback only when a paragraph reports no per-line confidence; real averaged confidence keeps the <0.5 retry rule meaningful.
-            return 0.9
+    private func systemTextRegion(
+        _ text: DocumentObservation.Container.Text,
+        pageIndex: Int,
+        id: String,
+        regionKind: LayoutRegionKind,
+        blockKind: LayoutBlockKind
+    ) -> LayoutRegion? {
+        let lines = systemLines(from: text, pageIndex: pageIndex)
+        guard !lines.isEmpty else { return nil }
+        let block = LayoutBlock(id: .init("\(id)-b0"), kind: blockKind, lines: lines, bbox: text.boundingRegion.boundingBox.cgRect)
+        return LayoutRegion(id: id, kind: regionKind, source: .system, blocks: [block], bbox: text.boundingRegion.boundingBox.cgRect)
+    }
+
+    @available(macOS 26.0, *)
+    private func systemLines(from text: DocumentObservation.Container.Text, pageIndex: Int) -> [TextLine] {
+        let lines: [TextLine] = text.lines.compactMap { observation -> TextLine? in
+            guard let candidate = observation.topCandidates(1).first else { return nil }
+            return TextLine(
+                text: candidate.string,
+                pageIndex: pageIndex,
+                bbox: observation.boundingBox.cgRect,
+                confidence: Double(candidate.confidence)
+            )
         }
-        let sum = paragraph.lines.reduce(0.0) { $0 + Double($1.confidence) }
-        return sum / Double(paragraph.lines.count)
+        if !lines.isEmpty { return lines }
+        let transcript = text.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else { return [] }
+        return [TextLine(
+            text: transcript,
+            pageIndex: pageIndex,
+            bbox: text.boundingRegion.boundingBox.cgRect,
+            confidence: nil
+        )]
+    }
+
+    private func overlapRatio(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
+        let intersection = lhs.intersection(rhs)
+        guard !intersection.isNull, lhs.width > 0, lhs.height > 0 else { return 0 }
+        return (intersection.width * intersection.height) / (lhs.width * lhs.height)
     }
 
     private func runTextRecognition(_ image: CGImage, pageIndex: Int) async throws -> OCRPageResult {

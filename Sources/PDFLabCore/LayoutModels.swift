@@ -61,12 +61,14 @@ public struct LayoutRegion: Equatable, Sendable {
 public struct PageLayout: Equatable, Sendable {
     public var pageIndex: Int
     public var regions: [LayoutRegion]
+    private var orderedLineProjection: [TextLine]?
 
-    public init(pageIndex: Int, regions: [LayoutRegion]) {
+    public init(pageIndex: Int, regions: [LayoutRegion], orderedLines: [TextLine]? = nil) {
         self.pageIndex = pageIndex
         self.regions = regions
+        self.orderedLineProjection = orderedLines
     }
 
     public var blocks: [LayoutBlock] { regions.flatMap(\.blocks) }
-    public var flattenedLines: [TextLine] { regions.flatMap(\.flattenedLines) }
+    public var flattenedLines: [TextLine] { orderedLineProjection ?? regions.flatMap(\.flattenedLines) }
 }

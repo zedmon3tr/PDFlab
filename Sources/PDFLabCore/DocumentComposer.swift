@@ -8,8 +8,27 @@ public enum DocumentComposer {
         options: ExportOptions,
         direction: TranslationDirection?
     ) -> ComposedDocument {
+        let units = zip(doc.paragraphs.indices, translations).map { index, text in
+            TranslatedUnit(id: resolvedID(for: doc.paragraphs[index], index: index), text: text)
+        }
+        return compose(doc: doc, translatedUnits: units, options: options, direction: direction)
+    }
+
+    public static func compose(
+        doc: ParsedDocument,
+        translatedUnits: [TranslatedUnit],
+        options: ExportOptions,
+        direction: TranslationDirection?
+    ) -> ComposedDocument {
         let needsTranslation = options.content != .extractionOnly
-        let hasValidTranslations = translations.count == doc.paragraphs.count
+        var translationsByID: [TranslationUnitID: String] = [:]
+        for unit in translatedUnits { translationsByID[unit.id] = unit.text }
+        let resolvedParagraphs = doc.paragraphs.enumerated().map { index, paragraph in
+            (paragraph, resolvedID(for: paragraph, index: index))
+        }
+        let hasValidTranslations = translationsByID.count == translatedUnits.count &&
+            translatedUnits.count == resolvedParagraphs.count &&
+            resolvedParagraphs.allSatisfy { translationsByID[$0.1] != nil }
         let effectiveContent: OutputContent = (needsTranslation && !hasValidTranslations)
             ? .extractionOnly
             : options.content
@@ -17,7 +36,7 @@ public enum DocumentComposer {
         var blocks: [ComposedBlock] = []
         var lastPageIndex: Int?
 
-        for (index, paragraph) in doc.paragraphs.enumerated() {
+        for (paragraph, unitID) in resolvedParagraphs {
             // 空白页不产生段落,break 的 pageIndex 可能跳页;导出器按 pageIndex 差值
             // 补空白输出页,保证按页对应模式输出页数 == 源页数(需求 3.6)。
             if options.pageMode == .pageAligned, paragraph.pageIndex != lastPageIndex {
@@ -27,10 +46,10 @@ public enum DocumentComposer {
 
             switch effectiveContent {
             case .translationOnly:
-                blocks.append(.translatedText(paragraph.textWithListMarker(translations[index])))
+                blocks.append(.translatedText(paragraph.textWithListMarker(translationsByID[unitID] ?? "")))
             case .bilingual:
                 blocks.append(.sourceText(paragraph.displayText))
-                blocks.append(.translatedText(paragraph.textWithListMarker(translations[index])))
+                blocks.append(.translatedText(paragraph.textWithListMarker(translationsByID[unitID] ?? "")))
             case .extractionOnly:
                 blocks.append(.sourceText(paragraph.displayText))
             }
@@ -42,5 +61,9 @@ public enum DocumentComposer {
         }
 
         return ComposedDocument(blocks: blocks, direction: direction)
+    }
+
+    private static func resolvedID(for paragraph: SourceParagraph, index: Int) -> TranslationUnitID {
+        paragraph.translationUnitID ?? TranslationUnitID("compat-paragraph:\(index)")
     }
 }

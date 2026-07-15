@@ -51,31 +51,39 @@ public enum TextLineCleaner {
         let repeatedEdgeIndexes = repeatedEdgeLineIndexes(in: ordered, excluding: pageNumberIndexes)
 
         var summary = TextCleanupSummary()
-        var lineIndex = 0
+        var removedIndexes = pageNumberIndexes.union(repeatedEdgeIndexes)
+        for index in ordered.indices where isOCRJunk(ordered[index]) { removedIndexes.insert(index) }
+        var matchedIndexes: Set<Int> = []
+        var projectionOffset = 0
         let cleanedLayouts = layouts.map { layout in
             let regions = layout.regions.compactMap { region -> LayoutRegion? in
                 let blocks = region.blocks.compactMap { block -> LayoutBlock? in
                     var retained: [TextLine] = []
                     for line in block.lines {
-                        if pageNumberIndexes.contains(lineIndex) {
-                            summary.pageNumbers += 1
-                        } else if repeatedEdgeIndexes.contains(lineIndex) {
-                            summary.repeatedEdgeLines += 1
-                        } else if isOCRJunk(line) {
-                            summary.ocrJunkLines += 1
-                        } else {
+                        guard let lineIndex = ordered.indices.first(where: { !matchedIndexes.contains($0) && ordered[$0] == line }) else {
                             retained.append(line)
+                            continue
                         }
-                        lineIndex += 1
+                        matchedIndexes.insert(lineIndex)
+                        if !removedIndexes.contains(lineIndex) { retained.append(line) }
                     }
                     guard !retained.isEmpty else { return nil }
-                    return LayoutBlock(id: block.id, kind: block.kind, lines: retained)
+                    let bounds = retained.count == block.lines.count ? block.bbox : nil
+                    return LayoutBlock(id: block.id, kind: block.kind, lines: retained, bbox: bounds)
                 }
                 guard !blocks.isEmpty else { return nil }
-                return LayoutRegion(id: region.id, kind: region.kind, source: region.source, blocks: blocks)
+                return LayoutRegion(id: region.id, kind: region.kind, source: region.source, blocks: blocks, bbox: region.bbox)
             }
-            return PageLayout(pageIndex: layout.pageIndex, regions: regions)
+            let pageLines = layout.flattenedLines
+            let projection = pageLines.enumerated().compactMap { localIndex, line in
+                removedIndexes.contains(projectionOffset + localIndex) ? nil : line
+            }
+            projectionOffset += pageLines.count
+            return PageLayout(pageIndex: layout.pageIndex, regions: regions, orderedLines: projection)
         }
+        summary.pageNumbers = pageNumberIndexes.count
+        summary.repeatedEdgeLines = repeatedEdgeIndexes.count
+        summary.ocrJunkLines = ordered.indices.filter { !pageNumberIndexes.contains($0) && !repeatedEdgeIndexes.contains($0) && isOCRJunk(ordered[$0]) }.count
         return CleanedPageLayouts(layouts: cleanedLayouts, summary: summary)
     }
 

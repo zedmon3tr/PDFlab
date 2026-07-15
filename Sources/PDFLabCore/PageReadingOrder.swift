@@ -6,7 +6,8 @@ import CoreGraphics
 /// original visual bands are kept instead of guessing a column layout.
 enum PageReadingOrder {
     static func order(_ lines: [TextLine]) -> [TextLine] {
-        recursiveRegions(lines, depth: 0).flatMap(orderByBands)
+        guard lines.count > 1 else { return lines }
+        return promotingSupportedLeftSidebar(in: recursiveOrder(lines, depth: 0))
     }
 
     static func layout(_ lines: [TextLine], pageIndex: Int) -> PageLayout {
@@ -22,7 +23,7 @@ enum PageReadingOrder {
                 blocks: [LayoutBlock(id: blockID, kind: .text, lines: ordered)]
             )
         }
-        return PageLayout(pageIndex: pageIndex, regions: regions)
+        return PageLayout(pageIndex: pageIndex, regions: regions, orderedLines: order(lines))
     }
 
     private static func recursiveRegions(_ lines: [TextLine], depth: Int) -> [[TextLine]] {
@@ -30,36 +31,18 @@ enum PageReadingOrder {
         guard lines.count > 1, depth < 12 else { return [lines] }
         let medianHeight = median(lines.map { max($0.bbox.height, 0.001) })
 
-        let headers = lines.filter { $0.bbox.maxY >= 0.95 }
-        if !headers.isEmpty, headers.count < lines.count {
-            let body = lines.filter { $0.bbox.maxY < 0.95 }
-            return recursiveRegions(headers, depth: depth + 1) + recursiveRegions(body, depth: depth + 1)
-        }
-        let footers = lines.filter { $0.bbox.minY <= 0.08 }
-        if !footers.isEmpty, footers.count < lines.count {
-            let body = lines.filter { $0.bbox.minY > 0.08 }
-            return recursiveRegions(body, depth: depth + 1) + recursiveRegions(footers, depth: depth + 1)
-        }
-
-        if let cut = changedLayoutHorizontalCut(in: lines) {
-            let upper = lines.filter { $0.bbox.midY > cut }
-            let lower = lines.filter { $0.bbox.midY <= cut }
-            return recursiveRegions(upper, depth: depth + 1) + recursiveRegions(lower, depth: depth + 1)
-        }
-
-        if let cut = largestVerticalCut(in: lines, minimumGap: max(0.008, medianHeight * 0.5)) {
-            let left = lines.filter { $0.bbox.midX < cut }
-            let right = lines.filter { $0.bbox.midX >= cut }
-            if isSupportedColumnSplit(left: left, right: right) {
-                return recursiveRegions(left, depth: depth + 1) + recursiveRegions(right, depth: depth + 1)
-            }
-        }
-
         if let cut = largestHorizontalCut(in: lines, minimumGap: medianHeight * 1.15) {
             let upper = lines.filter { $0.bbox.midY > cut }
             let lower = lines.filter { $0.bbox.midY <= cut }
             if !upper.isEmpty, !lower.isEmpty {
                 return recursiveRegions(upper, depth: depth + 1) + recursiveRegions(lower, depth: depth + 1)
+            }
+        }
+        if let cut = largestVerticalCut(in: lines, minimumGap: max(0.018, medianHeight * 1.35)) {
+            let left = lines.filter { $0.bbox.midX < cut }
+            let right = lines.filter { $0.bbox.midX >= cut }
+            if isSupportedColumnSplit(left: left, right: right) {
+                return recursiveRegions(left, depth: depth + 1) + recursiveRegions(right, depth: depth + 1)
             }
         }
         return [lines]
@@ -72,24 +55,38 @@ enum PageReadingOrder {
         return .body
     }
 
-    /// Finds a conservative transition from narrow side-by-side columns to a
-    /// substantially wider lower text zone. This is only used when several
-    /// distinct upper-column left edges support the layout change.
-    private static func changedLayoutHorizontalCut(in lines: [TextLine]) -> CGFloat? {
-        guard lines.count >= 8 else { return nil }
-        let medianWidth = median(lines.map { max($0.bbox.width, 0.001) })
-        let sortedByY = lines.sorted { $0.bbox.midY > $1.bbox.midY }
-        for (index, line) in sortedByY.enumerated() where index >= 4 && index < sortedByY.count - 1 {
-            guard line.bbox.width >= medianWidth * 1.3 else { continue }
-            let upper = Array(sortedByY[..<index])
-            let leftEdges = upper.map(\.bbox.minX).sorted()
-            let distinctGaps = zip(leftEdges, leftEdges.dropFirst()).filter { $1 - $0 >= 0.08 }.count
-            guard distinctGaps >= 2 else { continue }
-            let upperBottom = upper.map(\.bbox.minY).min() ?? line.bbox.maxY
-            guard upperBottom > line.bbox.maxY else { continue }
-            return (upperBottom + line.bbox.maxY) / 2
+    private static func recursiveOrder(_ lines: [TextLine], depth: Int) -> [TextLine] {
+        guard lines.count > 1, depth < 12 else { return orderByBands(lines) }
+        let medianHeight = median(lines.map { max($0.bbox.height, 0.001) })
+        if let cut = largestHorizontalCut(in: lines, minimumGap: medianHeight * 1.15) {
+            let upper = lines.filter { $0.bbox.midY > cut }
+            let lower = lines.filter { $0.bbox.midY <= cut }
+            if !upper.isEmpty, !lower.isEmpty {
+                return recursiveOrder(upper, depth: depth + 1) + recursiveOrder(lower, depth: depth + 1)
+            }
         }
-        return nil
+        if let cut = largestVerticalCut(in: lines, minimumGap: max(0.018, medianHeight * 1.35)) {
+            let left = lines.filter { $0.bbox.midX < cut }
+            let right = lines.filter { $0.bbox.midX >= cut }
+            if isSupportedColumnSplit(left: left, right: right) {
+                return recursiveOrder(left, depth: depth + 1) + recursiveOrder(right, depth: depth + 1)
+            }
+        }
+        return orderByBands(lines)
+    }
+
+    /// A dense, substantially narrower left sidebar is an independent reading
+    /// region even when its gutter is too narrow for the conservative XY-cut.
+    /// Equal-width narrow-gutter columns intentionally stay in legacy band order.
+    private static func promotingSupportedLeftSidebar(in lines: [TextLine]) -> [TextLine] {
+        guard lines.count >= 8 else { return lines }
+        let medianWidth = median(lines.map { max($0.bbox.width, 0.001) })
+        let sidebar = lines.filter { $0.bbox.minX < 0.2 && $0.bbox.width <= medianWidth * 0.6 }
+        guard sidebar.count >= 4 else { return lines }
+        let pageHeading = lines.prefix { $0.bbox.maxY >= 0.9 }
+        let headingCount = pageHeading.count
+        let remaining = lines.dropFirst(headingCount).filter { !sidebar.contains($0) }
+        return Array(pageHeading) + sidebar + remaining
     }
 
     private static func largestHorizontalCut(in lines: [TextLine], minimumGap: CGFloat) -> CGFloat? {

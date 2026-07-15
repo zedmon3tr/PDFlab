@@ -85,6 +85,9 @@ public enum ParagraphBuilder {
             if sameParagraph {
                 c.text = join(c.text, l.text)
                 if let cf = l.confidence { c.confs.append(cf) }
+                if sameVisualLine, isSameVisualLineContinuation(previous: c.firstBox, next: l.bbox) {
+                    c.firstBox = c.firstBox.union(l.bbox)
+                }
                 c.lastBox = sameVisualLine ? c.lastBox.union(l.bbox) : l.bbox
                 current = c
             } else { flush(); current = (l.text, l.pageIndex, l.confidence.map { [$0] } ?? [], l.bbox, l.bbox, nil) }
