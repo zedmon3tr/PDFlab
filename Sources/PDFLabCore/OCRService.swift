@@ -166,28 +166,7 @@ public struct OCRService: Sendable {
             guard !text.isEmpty else { return nil }
             return TextLine(text: text, pageIndex: line.pageIndex, bbox: line.bbox, confidence: line.confidence)
         }
-        // Pass 1: total order, top-to-bottom (strict weak: doubles + deterministic tiebreaks)
-        let byY = cleaned.sorted { a, b in
-            if a.bbox.midY != b.bbox.midY { return a.bbox.midY > b.bbox.midY }
-            if a.bbox.minX != b.bbox.minX { return a.bbox.minX < b.bbox.minX }
-            return a.text < b.text
-        }
-        // Pass 2: greedy banding against each band's anchor (first line)
-        var bands: [[TextLine]] = []
-        for line in byY {
-            if let anchor = bands.last?.first,
-               abs(anchor.bbox.midY - line.bbox.midY) <= max(anchor.bbox.height, line.bbox.height) * 0.5 {
-                bands[bands.count - 1].append(line)
-            } else {
-                bands.append([line])
-            }
-        }
-        // Pass 3: reading order within each band is left-to-right
-        return bands.flatMap { band in
-            band.sorted { a, b in
-                if a.bbox.minX != b.bbox.minX { return a.bbox.minX < b.bbox.minX }
-                return a.text < b.text
-            }
-        }
+        let pages = Dictionary(grouping: cleaned, by: \.pageIndex)
+        return pages.keys.sorted().flatMap { PageReadingOrder.order(pages[$0] ?? []) }
     }
 }

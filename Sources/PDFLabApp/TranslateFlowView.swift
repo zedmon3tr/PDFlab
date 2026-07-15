@@ -423,7 +423,8 @@ struct TranslateFlowView: View {
                 PreviewView(
                     document: composed,
                     content: state.options.content,
-                    lowQualityPages: state.parsed?.lowQualityPages ?? []
+                    lowQualityPages: state.parsed?.lowQualityPages ?? [],
+                    cleanupSummary: state.parsed?.cleanupSummary ?? .init()
                 )
             }
             Divider()

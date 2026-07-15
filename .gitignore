@@ -8,6 +8,7 @@
 # 本地开发与私有流程材料：不随公开仓分发
 /.impeccable/
 /Tests/
+/testPDF/
 /TEST PDF_Common EV Charging Problems and Issues copy.PDF
 /AGENTS.md
 /CLAUDE.md

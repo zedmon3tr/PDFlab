@@ -5,15 +5,28 @@ struct PreviewView: View {
     var document: ComposedDocument
     var content: OutputContent
     var lowQualityPages: [Int]
+    var cleanupSummary: TextCleanupSummary
 
     private var rows: [PreviewRow] {
         PreviewRow.rows(from: document, content: content)
+    }
+
+    static func cleanupSummaryText(_ summary: TextCleanupSummary, format: String = L10n.t("translate.cleanupSummary")) -> String {
+        String(
+            format: format,
+            String(summary.repeatedEdgeLines),
+            String(summary.pageNumbers),
+            String(summary.ocrJunkLines)
+        )
     }
 
     var body: some View {
         VStack(spacing: 0) {
             if !lowQualityPages.isEmpty {
                 lowQualityBanner
+            }
+            if cleanupSummary.hasFilteredLines {
+                cleanupSummaryBanner
             }
 
             ScrollView {
@@ -38,6 +51,19 @@ struct PreviewView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .background(.orange.opacity(0.12))
+    }
+
+    private var cleanupSummaryBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+            Text(Self.cleanupSummaryText(cleanupSummary))
+            Spacer()
+        }
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.quaternary.opacity(0.5))
     }
 
     @ViewBuilder

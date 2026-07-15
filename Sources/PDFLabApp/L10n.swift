@@ -170,6 +170,7 @@ enum L10n {
         "translate.engine": ("翻译引擎", "Translation engine"),
         "translate.engine.missingKey": ("所选引擎尚未配置 API Key,请前往“设置 → 翻译服务”检查相关配置。", "The selected engine has no API key configured. Check it in Settings → Translation Services."),
         "translate.lowQualityPages": ("识别质量低的页:", "Low quality OCR pages:"),
+        "translate.cleanupSummary": ("已过滤：页眉页脚 %@ 条，页码 %@ 条，OCR 垃圾行 %@ 条", "Filtered: %@ header/footer, %@ page number, %@ OCR junk line(s)"),
         "translate.preview.page": ("第", "Page"),
 
         // 历史记录

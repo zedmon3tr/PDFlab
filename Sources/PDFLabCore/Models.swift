@@ -34,10 +34,12 @@ public struct ParsedDocument: Equatable, Sendable {
     public var paragraphs: [SourceParagraph]
     public var pageCount: Int
     public var lowQualityPages: [Int]   // 置信度兜底标记的页
-    public init(paragraphs: [SourceParagraph], pageCount: Int, lowQualityPages: [Int] = []) {
+    public var cleanupSummary: TextCleanupSummary
+    public init(paragraphs: [SourceParagraph], pageCount: Int, lowQualityPages: [Int] = [], cleanupSummary: TextCleanupSummary = .init()) {
         self.paragraphs = paragraphs
         self.pageCount = pageCount
         self.lowQualityPages = lowQualityPages
+        self.cleanupSummary = cleanupSummary
     }
 }
 

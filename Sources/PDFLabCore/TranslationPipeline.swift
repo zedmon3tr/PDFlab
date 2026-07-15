@@ -237,10 +237,16 @@ public final class TranslationPipeline: @unchecked Sendable {
             }
         }
 
-        // 阶段 3:段落重建 + 跨页合并。
-        let paragraphs = ParagraphBuilder.mergeAcrossPages(ParagraphBuilder.buildParagraphs(from: allLines))
+        // 阶段 3:按页几何重排并清理确定的非正文行，再聚段、跨页合并。
+        let cleaned = TextLineCleaner.clean(allLines)
+        let paragraphs = ParagraphBuilder.mergeAcrossPages(ParagraphBuilder.buildParagraphs(from: cleaned.lines))
         guard !paragraphs.isEmpty else { throw PDFLabError.noTextRecognized }
-        let parsed = ParsedDocument(paragraphs: paragraphs, pageCount: totalPages, lowQualityPages: lowQualityPages)
+        let parsed = ParsedDocument(
+            paragraphs: paragraphs,
+            pageCount: totalPages,
+            lowQualityPages: lowQualityPages,
+            cleanupSummary: cleaned.summary
+        )
 
         if input.options.content == .extractionOnly {
             try Task.checkCancellation()
