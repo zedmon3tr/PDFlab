@@ -70,7 +70,7 @@ public enum PDFTextExtractor {
             splitVisualLine(selection, on: page, pageBounds: pageBounds, pageIndex: pageIndex)
         }
         guard sameNonWhitespaceCharacters(content, lines.map(\.text).joined()) else { return nil }
-        return lines
+        return normalizeCoincidentMultilineGeometry(lines)
     }
 
     private struct VisualCharacter {
@@ -178,6 +178,38 @@ public enum PDFTextExtractor {
             rect.maxX.isFinite && rect.maxY.isFinite && rect.width > 0 && rect.height > 0
     }
 
+    /// PDFKit occasionally returns the same union rect for two adjacent text
+    /// ranges on separate visual rows. Recover the rows only when the shared
+    /// rect is a clear multiple of the page's ordinary line height.
+    static func normalizeCoincidentMultilineGeometry(_ lines: [TextLine]) -> [TextLine] {
+        guard lines.count >= 3 else { return lines }
+        let heights = lines.map { max($0.bbox.height, 0.001) }
+        let middle = median(heights)
+        let baseline = median(heights.filter { $0 <= middle })
+        let tolerance = baseline * 0.1
+        var normalized = lines
+        var consumed: Set<Int> = []
+        for index in lines.indices where !consumed.contains(index) {
+            let box = lines[index].bbox
+            let matches = lines.indices.filter { candidate in
+                guard !consumed.contains(candidate) else { return false }
+                let other = lines[candidate].bbox
+                let horizontalOverlap = min(box.maxX, other.maxX) - max(box.minX, other.minX)
+                return abs(box.minY - other.minY) <= tolerance &&
+                    abs(box.maxY - other.maxY) <= tolerance &&
+                    horizontalOverlap >= min(box.width, other.width) * 0.8
+            }
+            guard matches.count >= 2, box.height >= baseline * CGFloat(matches.count) * 0.8 else { continue }
+            let rowHeight = box.height / CGFloat(matches.count)
+            for (position, match) in matches.enumerated() {
+                normalized[match].bbox.origin.y = box.minY + CGFloat(matches.count - position - 1) * rowHeight
+                normalized[match].bbox.size.height = rowHeight
+                consumed.insert(match)
+            }
+        }
+        return normalized
+    }
+
     private static func sameNonWhitespaceCharacters(_ source: String, _ rebuilt: String) -> Bool {
         source.filter { !$0.isWhitespace }.sorted() == rebuilt.filter { !$0.isWhitespace }.sorted()
     }
@@ -216,7 +248,8 @@ public enum PDFTextExtractor {
             lines.append(TextLine(text: text, pageIndex: pageIndex, bbox: bbox, confidence: nil))
         }
 
-        return PageExtraction(pageIndex: pageIndex, lines: lines, isScanned: lines.isEmpty)
+        let normalized = normalizeCoincidentMultilineGeometry(lines)
+        return PageExtraction(pageIndex: pageIndex, lines: normalized, isScanned: normalized.isEmpty)
     }
 
     static func fallbackBBox(lineIndex: Int, lineCount: Int) -> CGRect {

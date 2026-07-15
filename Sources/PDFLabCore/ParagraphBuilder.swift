@@ -124,8 +124,9 @@ public enum ParagraphBuilder {
         }() : nil
 
         func isShort(_ box: CGRect) -> Bool {
-            guard let rightEdge else { return false }
-            return rightEdge - box.maxX > max(box.height, baseline) * 2
+            guard let leftEdge, let rightEdge else { return false }
+            let reliableDeficit = max(max(box.height, baseline) * 3, (rightEdge - leftEdge) * 0.25)
+            return rightEdge - box.maxX > reliableDeficit
         }
         func flush() {
             guard let value = current else { return }
@@ -217,7 +218,10 @@ public enum ParagraphBuilder {
             }
             let semanticBoundary = pending.kind != effectiveKind
             let appliesBodyGeometry = pending.kind == .body && effectiveKind == .body
-            let startsIndented = appliesBodyGeometry && (leftEdge.map { line.bbox.minX - $0 > max(line.bbox.height, baseline) } ?? false)
+            let indent = max(line.bbox.height, baseline)
+            let startsIndented = appliesBodyGeometry && (leftEdge.map { edge in
+                line.bbox.minX - edge > indent && pending.lastBox.minX - edge <= indent * 0.5
+            } ?? false)
             let previousShort = appliesBodyGeometry && isShort(pending.lastBox)
             let preservesSystemBlock = systemKind != nil
             let continues = sameVisualLine || preservesSystemBlock || (!semanticBoundary && !startsIndented && !previousShort && isNextLineContinuation(
@@ -395,7 +399,8 @@ public enum ParagraphBuilder {
             }
         }
         let best = groups.max { $0.count < $1.count } ?? []
-        return best.count >= 2 ? median(best) : nil
+        let minimumSupport = max(2, Int(ceil(Double(values.count) * 0.25)))
+        return best.count >= minimumSupport ? median(best) : nil
     }
 
     private static func median(_ values: [CGFloat]) -> CGFloat {

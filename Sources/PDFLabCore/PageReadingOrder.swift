@@ -91,7 +91,9 @@ enum PageReadingOrder {
                 return recursiveRegions(upper, depth: depth + 1) + recursiveRegions(lower, depth: depth + 1)
             }
         }
-        if let cut = largestVerticalCut(in: lines, minimumGap: max(0.018, medianHeight * 1.35)) {
+        let minimumVerticalGap = max(0.018, medianHeight * 1.35)
+        if let cut = largestVerticalCut(in: lines, minimumGap: minimumVerticalGap)
+            ?? supportedRowVerticalCut(in: lines, minimumGap: minimumVerticalGap, medianHeight: medianHeight) {
             let left = lines.filter { $0.bbox.midX < cut }
             let right = lines.filter { $0.bbox.midX >= cut }
             if isSupportedColumnSplit(left: left, right: right) {
@@ -118,7 +120,9 @@ enum PageReadingOrder {
                 return recursiveOrder(upper, depth: depth + 1) + recursiveOrder(lower, depth: depth + 1)
             }
         }
-        if let cut = largestVerticalCut(in: lines, minimumGap: max(0.018, medianHeight * 1.35)) {
+        let minimumVerticalGap = max(0.018, medianHeight * 1.35)
+        if let cut = largestVerticalCut(in: lines, minimumGap: minimumVerticalGap)
+            ?? supportedRowVerticalCut(in: lines, minimumGap: minimumVerticalGap, medianHeight: medianHeight) {
             let left = lines.filter { $0.bbox.midX < cut }
             let right = lines.filter { $0.bbox.midX >= cut }
             if isSupportedColumnSplit(left: left, right: right) {
@@ -142,6 +146,51 @@ enum PageReadingOrder {
             in: lines.map { (min: $0.bbox.minX, max: $0.bbox.maxX) },
             minimumGap: minimumGap
         )
+    }
+
+    /// Finds a gutter repeated across several visual rows even when a small
+    /// number of lower-page notes intrude into the otherwise empty corridor.
+    private static func supportedRowVerticalCut(
+        in lines: [TextLine],
+        minimumGap: CGFloat,
+        medianHeight: CGFloat
+    ) -> CGFloat? {
+        struct Evidence {
+            var midpoint: CGFloat
+            var row: CGFloat
+        }
+        var evidence: [Evidence] = []
+        for left in lines {
+            for right in lines where left.bbox.maxX < right.bbox.minX {
+                let rowDistance = abs(left.bbox.midY - right.bbox.midY)
+                guard rowDistance <= max(left.bbox.height, right.bbox.height),
+                      right.bbox.minX - left.bbox.maxX >= minimumGap else { continue }
+                evidence.append(Evidence(
+                    midpoint: (left.bbox.maxX + right.bbox.minX) / 2,
+                    row: (left.bbox.midY + right.bbox.midY) / 2
+                ))
+            }
+        }
+        guard evidence.count >= 3 else { return nil }
+
+        var clusters: [[Evidence]] = []
+        for item in evidence.sorted(by: { $0.midpoint < $1.midpoint }) {
+            if let last = clusters.indices.last,
+               item.midpoint - (clusters[last].last?.midpoint ?? item.midpoint) <= medianHeight {
+                clusters[last].append(item)
+            } else {
+                clusters.append([item])
+            }
+        }
+        let supported = clusters.filter { cluster in
+            var rows: [CGFloat] = []
+            for row in cluster.map(\.row).sorted() where rows.last.map({ row - $0 > medianHeight * 0.5 }) ?? true {
+                rows.append(row)
+            }
+            return rows.count >= 3
+        }
+        guard let best = supported.max(by: { $0.count < $1.count }) else { return nil }
+        return median(best.map(\.midpoint))
     }
 
     private static func largestGap(
