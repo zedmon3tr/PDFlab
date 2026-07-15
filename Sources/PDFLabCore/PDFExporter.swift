@@ -4,6 +4,12 @@ import CoreGraphics
 /// 将 ComposedDocument 渲染为 PDF:A4 页面,CoreText 逐块排版,列满自动换页,
 /// 遇 .pageBreak 按页号差值换页,空白源页保留为空白输出页(按页对应模式)。
 public struct PDFExporter: Exporter {
+    enum PaginationDecision: Equatable {
+        case consume
+        case retryOnNewPage
+        case fail
+    }
+
     public init() {}
 
     public func export(_ doc: ComposedDocument, to url: URL, uiLanguageChinese: Bool) throws {
@@ -24,6 +30,14 @@ public struct PDFExporter: Exporter {
 
         let state = PageState(context: context, contentTop: contentTop)
         state.beginPage()
+        var completed = false
+        defer {
+            state.endPage()
+            context.closePDF()
+            if !completed {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
         var lastBreakIndex = 0
 
         for (index, block) in doc.blocks.enumerated() {
@@ -43,16 +57,16 @@ public struct PDFExporter: Exporter {
                     }
                 }
             case .sourceText(let textBlock):
-                drawBlock(
+                try drawBlock(
                     text: textBlock.text,
-                    grayLevel: ExportTypography.sourceGray,
+                    grayLevel: ExportTypography.grayLevel(blockAt: index, in: doc.blocks),
                     spacingAfter: ExportTypography.spacingAfter(blockAt: index, in: doc.blocks),
                     contentWidth: contentWidth,
                     contentBottom: contentBottom,
                     state: state
                 )
             case .translatedText(let textBlock):
-                drawBlock(
+                try drawBlock(
                     text: textBlock.text,
                     grayLevel: 0.0,
                     spacingAfter: ExportTypography.spacingAfter(blockAt: index, in: doc.blocks),
@@ -62,9 +76,7 @@ public struct PDFExporter: Exporter {
                 )
             }
         }
-
-        state.endPage()
-        context.closePDF()
+        completed = true
     }
 
     /// 跟踪当前页排版状态(游标位置、是否为空),用类避免闭包捕获 inout 造成独占访问冲突。
@@ -99,7 +111,7 @@ public struct PDFExporter: Exporter {
         contentWidth: CGFloat,
         contentBottom: CGFloat,
         state: PageState
-    ) {
+    ) throws {
         guard !text.isEmpty else { return }
 
         let attributed = Self.attributedString(
@@ -133,12 +145,19 @@ public struct PDFExporter: Exporter {
             )
             let ctFrame = CTFramesetterCreateFrame(framesetter, range, path, nil)
             let visibleRange = CTFrameGetVisibleStringRange(ctFrame)
-            if visibleRange.length == 0, !state.pageIsEmpty {
+            switch Self.paginationDecision(
+                visibleLength: visibleRange.length,
+                pageIsEmpty: state.pageIsEmpty
+            ) {
+            case .retryOnNewPage:
                 state.endPage()
                 state.beginPage()
                 continue
+            case .fail:
+                throw PDFLabError.exportWriteFailed("CoreText could not lay out the remaining text")
+            case .consume:
+                break
             }
-            guard visibleRange.length > 0 else { break }
             CTFrameDraw(ctFrame, state.context)
 
             let usedSize = CTFramesetterSuggestFrameSizeWithConstraints(
@@ -157,6 +176,11 @@ public struct PDFExporter: Exporter {
                 state.beginPage()
             }
         }
+    }
+
+    static func paginationDecision(visibleLength: Int, pageIsEmpty: Bool) -> PaginationDecision {
+        guard visibleLength == 0 else { return .consume }
+        return pageIsEmpty ? .fail : .retryOnNewPage
     }
 
     static func attributedString(

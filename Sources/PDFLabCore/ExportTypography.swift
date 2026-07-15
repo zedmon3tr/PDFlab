@@ -45,7 +45,8 @@ enum ExportTypography {
     }
 
     static func isCJKParagraph(_ text: String) -> Bool {
-        guard let character = firstEffectiveCharacter(in: text) else { return false }
+        let content = ParagraphListMarkerParser.splitLeadingMarker(in: text)?.body ?? text
+        guard let character = firstEffectiveCharacter(in: content) else { return false }
         return ParagraphBuilder.isCJK(character)
     }
 
@@ -69,12 +70,34 @@ enum ExportTypography {
 
     static func spacingAfter(blockAt index: Int, in blocks: [ComposedBlock]) -> ExportParagraphSpacing {
         guard case let .sourceText(current) = blocks[index],
-              let groupID = current.groupID,
               blocks.indices.contains(index + 1),
-              case let .translatedText(next) = blocks[index + 1],
-              next.groupID == groupID else {
+              case let .translatedText(next) = blocks[index + 1] else {
             return .outer
         }
-        return .intraGroup
+        switch (current.groupID, next.groupID) {
+        case let (.some(sourceID), .some(translationID)) where sourceID == translationID:
+            return .intraGroup
+        case (nil, nil):
+            return .intraGroup
+        default:
+            return .outer
+        }
+    }
+
+    static func grayLevel(blockAt index: Int, in blocks: [ComposedBlock]) -> CGFloat {
+        guard case let .sourceText(source) = blocks[index] else { return 0 }
+        if let groupID = source.groupID {
+            let hasPartner = blocks.contains { block in
+                guard case let .translatedText(translation) = block else { return false }
+                return translation.groupID == groupID
+            }
+            return hasPartner ? sourceGray : 0
+        }
+        guard blocks.indices.contains(index + 1),
+              case let .translatedText(next) = blocks[index + 1],
+              next.groupID == nil else {
+            return 0
+        }
+        return sourceGray
     }
 }

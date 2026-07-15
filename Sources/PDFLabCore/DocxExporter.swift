@@ -87,13 +87,13 @@ public struct DocxExporter: Exporter {
             case .sourceText(let textBlock):
                 body += paragraphXML(
                     for: textBlock,
-                    source: true,
+                    grayLevel: ExportTypography.grayLevel(blockAt: index, in: doc.blocks),
                     spacingAfter: ExportTypography.spacingAfter(blockAt: index, in: doc.blocks)
                 )
             case .translatedText(let textBlock):
                 body += paragraphXML(
                     for: textBlock,
-                    source: false,
+                    grayLevel: 0,
                     spacingAfter: ExportTypography.spacingAfter(blockAt: index, in: doc.blocks)
                 )
             }
@@ -101,13 +101,13 @@ public struct DocxExporter: Exporter {
 
         return """
         <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-        <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>\(body)</w:body></w:document>
+        <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>\(body)\(sectionPropertiesXML)</w:body></w:document>
         """
     }
 
     private static func paragraphXML(
         for block: ComposedTextBlock,
-        source: Bool,
+        grayLevel: CGFloat,
         spacingAfter: ExportParagraphSpacing
     ) -> String {
         let layout = ExportTypography.layout(for: block.text, spacingAfter: spacingAfter)
@@ -116,8 +116,10 @@ public struct DocxExporter: Exporter {
         let indent = layout.firstLineIndent > 0
             ? "<w:ind w:firstLine=\"\(twips(layout.firstLineIndent))\"/>"
             : ""
-        let color = source ? "<w:color w:val=\"4D4D4D\"/>" : "<w:color w:val=\"000000\"/>"
-        return "<w:p><w:pPr><w:spacing w:line=\"\(line)\" w:lineRule=\"exact\" w:after=\"\(after)\"/>\(indent)<w:jc w:val=\"left\"/></w:pPr><w:r><w:rPr><w:sz w:val=\"24\"/>\(color)</w:rPr><w:t>\(xmlEscape(block.text))</w:t></w:r></w:p>"
+        let color = grayLevel > 0 ? "<w:color w:val=\"4D4D4D\"/>" : "<w:color w:val=\"000000\"/>"
+        let preserveSpace = block.text.first?.isWhitespace == true || block.text.last?.isWhitespace == true
+        let spaceAttribute = preserveSpace ? " xml:space=\"preserve\"" : ""
+        return "<w:p><w:pPr><w:spacing w:line=\"\(line)\" w:lineRule=\"exact\" w:after=\"\(after)\"/>\(indent)<w:jc w:val=\"left\"/></w:pPr><w:r><w:rPr><w:sz w:val=\"24\"/>\(color)</w:rPr><w:t\(spaceAttribute)>\(xmlEscape(block.text))</w:t></w:r></w:p>"
     }
 
     private static func twips(_ points: CGFloat) -> Int {
@@ -125,7 +127,19 @@ public struct DocxExporter: Exporter {
     }
 
     private static func xmlEscape(_ text: String) -> String {
-        var escaped = text
+        var sanitized = ""
+        for scalar in text.unicodeScalars {
+            let value = scalar.value
+            if value == 0x9 || value == 0xA || value == 0xD ||
+                (0x20...0xD7FF).contains(value) ||
+                (0xE000...0xFFFD).contains(value) ||
+                (0x10000...0x10FFFF).contains(value) {
+                sanitized.unicodeScalars.append(scalar)
+            } else {
+                sanitized.append("�")
+            }
+        }
+        var escaped = sanitized
         escaped = escaped.replacingOccurrences(of: "&", with: "&amp;")
         escaped = escaped.replacingOccurrences(of: "<", with: "&lt;")
         escaped = escaped.replacingOccurrences(of: ">", with: "&gt;")
@@ -133,6 +147,8 @@ public struct DocxExporter: Exporter {
         escaped = escaped.replacingOccurrences(of: "'", with: "&apos;")
         return escaped
     }
+
+    private static let sectionPropertiesXML = "<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/><w:pgMar w:top=\"1200\" w:right=\"1200\" w:bottom=\"1200\" w:left=\"1200\"/></w:sectPr>"
 
     // MARK: - Static package members
 
