@@ -36,7 +36,9 @@ enum TableRegionDetector {
             return line.bbox.midY >= 0.75 && ["contents", "table of contents", "目录", "目錄", "index", "索引"].contains(key)
         }
         return runs.compactMap { run in
-            guard stableGrid(run), !(hasDirectoryTitle && hasLeaderRows(run) && hasContinuousRightPageNumbers(run)) else {
+            let numericPageColumn = hasMonotonicRightPageNumbers(run)
+            let directorySignals = hasDirectoryTitle || hasLeaderRows(run)
+            guard stableGrid(run), !looksLikeFullPageProseColumns(run), !(numericPageColumn && directorySignals) else {
                 return nil
             }
             return Detection(rows: run.map(\.indices))
@@ -84,7 +86,34 @@ enum TableRegionDetector {
             let anchors = rows.map { $0.lines[column].bbox.minX }
             guard (anchors.max() ?? 0) - (anchors.min() ?? 0) <= tolerance else { return false }
         }
+        let rowSteps = zip(rows, rows.dropFirst()).map {
+            $0.0.lines[0].bbox.midY - $0.1.lines[0].bbox.midY
+        }
+        guard let minimumStep = rowSteps.min(), let maximumStep = rowSteps.max(), minimumStep > 0,
+              maximumStep / minimumStep <= 1.35,
+              maximumStep <= medianHeight(of: rows.flatMap(\.lines)) * 4.5 else { return false }
+        for row in rows {
+            for (left, right) in zip(row.lines, row.lines.dropFirst()) {
+                let gap = right.bbox.minX - left.bbox.maxX
+                let cellWidth = max(min(left.bbox.width, right.bbox.width), 0.001)
+                guard gap / cellWidth >= 0.2, gap / cellWidth <= 4 else { return false }
+            }
+        }
         return true
+    }
+
+    private static func looksLikeFullPageProseColumns(_ rows: [VisualRow]) -> Bool {
+        guard rows.count >= 6 else { return false }
+        let lines = rows.flatMap(\.lines)
+        let bounds = lines.map(\.bbox).reduce(CGRect.null) { $0.union($1) }
+        let lengths = lines.map { $0.text.count }.sorted()
+        let medianLength = lengths[lengths.count / 2]
+        let widths = lines.map(\.bbox.width).sorted()
+        let medianWidth = widths[widths.count / 2]
+        let first = rows[0].lines
+        let pitches = zip(first, first.dropFirst()).map { $0.1.bbox.minX - $0.0.bbox.minX }.sorted()
+        let medianPitch = pitches[pitches.count / 2]
+        return bounds.height >= 0.45 && medianLength >= 24 && medianWidth / max(medianPitch, 0.001) >= 0.72
     }
 
     private static func hasLeaderRows(_ rows: [VisualRow]) -> Bool {
@@ -97,14 +126,14 @@ enum TableRegionDetector {
         return marks.count >= 3 && marks.count * 2 >= text.filter { !$0.isWhitespace }.count
     }
 
-    private static func hasContinuousRightPageNumbers(_ rows: [VisualRow]) -> Bool {
+    private static func hasMonotonicRightPageNumbers(_ rows: [VisualRow]) -> Bool {
         let numbers = rows.compactMap { row -> Int? in
             guard let text = row.lines.last?.text.trimmingCharacters(in: .whitespacesAndNewlines),
                   !text.isEmpty, text.allSatisfy(\.isNumber) else { return nil }
             return Int(text)
         }
         guard numbers.count * 4 >= rows.count * 3, numbers.count >= 3 else { return false }
-        return zip(numbers, numbers.dropFirst()).allSatisfy { $0.1 == $0.0 + 1 }
+        return zip(numbers, numbers.dropFirst()).allSatisfy { $0.1 >= $0.0 }
     }
 
     private static func medianHeight(of lines: [TextLine]) -> CGFloat {
@@ -130,8 +159,15 @@ enum ParsedBlockBuilder {
                 }
                 guard region.kind == .table else { continue }
                 let rows = region.blocks.compactMap { block -> SourceTableRow? in
-                    let text = block.lines.sorted { $0.bbox.minX < $1.bbox.minX }
-                        .map(\.text).joined(separator: "\t")
+                    let cells = block.tableCells.isEmpty
+                        ? block.lines.sorted { $0.bbox.minX < $1.bbox.minX }
+                            .enumerated().map { LayoutTableCell(columnIndex: $0.offset, lines: [$0.element]) }
+                        : block.tableCells.sorted { $0.columnIndex < $1.columnIndex }
+                    let text = cells.map { cell in
+                        cell.lines.reduce("") { text, line in
+                            text.isEmpty ? line.text : ParagraphBuilder.join(text, line.text)
+                        }
+                    }.joined(separator: "\t")
                     guard !text.isEmpty else { return nil }
                     let id = TranslationUnitID("table-row:\(block.id.rawValue)")
                     return SourceTableRow(translationUnitID: id, text: text)

@@ -147,7 +147,12 @@ public struct DocxExporter: Exporter {
 
     private static func tableParagraphXML(_ text: String, bold: Bool) -> String {
         let boldXML = bold ? "<w:b/>" : ""
-        return "<w:p><w:pPr><w:spacing w:line=\"336\" w:lineRule=\"exact\" w:after=\"0\"/><w:jc w:val=\"left\"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii=\"Menlo\" w:hAnsi=\"Menlo\" w:eastAsia=\"Menlo\"/><w:sz w:val=\"22\"/>\(boldXML)</w:rPr><w:t xml:space=\"preserve\">\(xmlEscape(text))</w:t></w:r></w:p>"
+        let cells = text.split(separator: "\t", omittingEmptySubsequences: false)
+        let content = cells.enumerated().map { index, cell in
+            let tab = index < cells.count - 1 ? "<w:tab/>" : ""
+            return "<w:t xml:space=\"preserve\">\(xmlEscape(String(cell)))</w:t>\(tab)"
+        }.joined()
+        return "<w:p><w:pPr><w:spacing w:line=\"336\" w:lineRule=\"exact\" w:after=\"0\"/><w:jc w:val=\"left\"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii=\"Menlo\" w:hAnsi=\"Menlo\" w:eastAsia=\"Menlo\"/><w:sz w:val=\"22\"/>\(boldXML)</w:rPr>\(content)</w:r></w:p>"
     }
 
     private static func twips(_ points: CGFloat) -> Int {

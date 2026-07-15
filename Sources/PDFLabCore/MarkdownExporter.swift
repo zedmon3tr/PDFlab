@@ -23,7 +23,9 @@ public struct MarkdownExporter: Exporter {
                 output += Self.markdownText(block) + "\n\n"
             case .tableRegion(let table):
                 let label = uiLanguageChinese ? "[表格]" : "[Table]"
-                output += label + "\n\n```\n" + table.displayedRows.joined(separator: "\n") + "\n```\n\n"
+                let content = table.displayedRows.joined(separator: "\n")
+                let fence = String(repeating: "`", count: max(3, Self.longestBacktickRun(in: content) + 1))
+                output += label + "\n\n\(fence)\n" + content + "\n\(fence)\n\n"
             }
         }
         if output.hasSuffix("\n\n") {
@@ -40,5 +42,19 @@ public struct MarkdownExporter: Exporter {
     private static func markdownText(_ block: ComposedTextBlock) -> String {
         guard case let .heading(level) = block.kind else { return block.text }
         return String(repeating: "#", count: min(max(level, 1), 3)) + " " + block.text
+    }
+
+    private static func longestBacktickRun(in text: String) -> Int {
+        var longest = 0
+        var current = 0
+        for character in text {
+            if character == "`" {
+                current += 1
+                longest = max(longest, current)
+            } else {
+                current = 0
+            }
+        }
+        return longest
     }
 }

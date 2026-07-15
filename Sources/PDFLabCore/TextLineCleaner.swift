@@ -71,18 +71,28 @@ public enum TextLineCleaner {
 
     public static func clean(_ layouts: [PageLayout]) -> CleanedPageLayouts {
         let ordered = layouts.flatMap(\.flattenedLines)
-        let pageNumberIndexes = Set(ordered.indices.filter { isPageNumber(ordered[$0]) })
-        let repeatedEdgeIndexes = repeatedEdgeLineIndexes(in: ordered, excluding: pageNumberIndexes)
+        var occurrenceQueues: [LineOccurrenceKey: [Int]] = [:]
+        for (index, line) in ordered.enumerated() {
+            occurrenceQueues[LineOccurrenceKey(line), default: []].append(index)
+        }
+        let tableLineKeys = Set(layouts.flatMap { layout in
+            layout.regions.filter { $0.kind == .table }.flatMap(\.flattenedLines).map(LineOccurrenceKey.init)
+        })
+        // 同值/同框重复无法从值模型反推身份时，连同正文重复项一起豁免；宁可少清理，绝不动表格 cell。
+        let protectedTableIndexes = Set(ordered.indices.filter { tableLineKeys.contains(LineOccurrenceKey(ordered[$0])) })
+        let pageNumberIndexes = Set(ordered.indices.filter {
+            !protectedTableIndexes.contains($0) && isPageNumber(ordered[$0])
+        })
+        let excludedEdgeIndexes = pageNumberIndexes.union(protectedTableIndexes)
+        let repeatedEdgeIndexes = repeatedEdgeLineIndexes(in: ordered, excluding: excludedEdgeIndexes)
 
         var summary = TextCleanupSummary()
         summary.tableRegions = layouts.reduce(0) { count, layout in
             count + layout.regions.filter { $0.kind == .table }.count
         }
         var removedIndexes = pageNumberIndexes.union(repeatedEdgeIndexes)
-        for index in ordered.indices where isOCRJunk(ordered[index]) { removedIndexes.insert(index) }
-        var occurrenceQueues: [LineOccurrenceKey: [Int]] = [:]
-        for (index, line) in ordered.enumerated() {
-            occurrenceQueues[LineOccurrenceKey(line), default: []].append(index)
+        for index in ordered.indices where !protectedTableIndexes.contains(index) && isOCRJunk(ordered[index]) {
+            removedIndexes.insert(index)
         }
         var occurrenceCursors: [LineOccurrenceKey: Int] = [:]
         var projectionOffset = 0
@@ -99,11 +109,17 @@ public enum TextLineCleaner {
                         }
                         let lineIndex = queue[cursor]
                         occurrenceCursors[key] = cursor + 1
-                        if !removedIndexes.contains(lineIndex) { retained.append(line) }
+                        if region.kind == .table || !removedIndexes.contains(lineIndex) { retained.append(line) }
                     }
                     guard !retained.isEmpty else { return nil }
                     let bounds = retained.count == block.lines.count ? block.bbox : nil
-                    return LayoutBlock(id: block.id, kind: block.kind, lines: retained, bbox: bounds)
+                    let retainedCells = block.tableCells.compactMap { cell -> LayoutTableCell? in
+                        let lines = cell.lines.filter { retained.contains($0) }
+                        return lines.isEmpty ? nil : LayoutTableCell(columnIndex: cell.columnIndex, lines: lines)
+                    }
+                    return LayoutBlock(
+                        id: block.id, kind: block.kind, lines: retained, bbox: bounds, tableCells: retainedCells
+                    )
                 }
                 guard !blocks.isEmpty else { return nil }
                 return LayoutRegion(id: region.id, kind: region.kind, source: region.source, blocks: blocks, bbox: region.bbox)
@@ -117,7 +133,10 @@ public enum TextLineCleaner {
         }
         summary.pageNumbers = pageNumberIndexes.count
         summary.repeatedEdgeLines = repeatedEdgeIndexes.count
-        summary.ocrJunkLines = ordered.indices.filter { !pageNumberIndexes.contains($0) && !repeatedEdgeIndexes.contains($0) && isOCRJunk(ordered[$0]) }.count
+        summary.ocrJunkLines = ordered.indices.filter {
+            !protectedTableIndexes.contains($0) && !pageNumberIndexes.contains($0) &&
+                !repeatedEdgeIndexes.contains($0) && isOCRJunk(ordered[$0])
+        }.count
         return CleanedPageLayouts(layouts: cleanedLayouts, summary: summary)
     }
 

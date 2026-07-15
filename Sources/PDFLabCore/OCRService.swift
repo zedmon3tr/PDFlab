@@ -75,26 +75,20 @@ public struct OCRService: Sendable {
 
         for observation in observations {
             let document = observation.document
-            var occupied: [CGRect] = []
             if let title = document.title, let region = systemTextRegion(
                 title, pageIndex: pageIndex, id: "system-p\(pageIndex)-title", regionKind: .title, blockKind: .title
             ) {
                 regions.append(region)
-                occupied.append(region.bbox)
             }
             for (tableIndex, table) in document.tables.enumerated() {
-                let blocks = table.rows.enumerated().compactMap { rowIndex, cells -> LayoutBlock? in
-                    let lines = cells.flatMap { systemLines(from: $0.content.text, pageIndex: pageIndex) }
-                    guard !lines.isEmpty else { return nil }
-                    return LayoutBlock(id: .init("system-p\(pageIndex)-table\(tableIndex)-row\(rowIndex)"), kind: .tableRow, lines: lines)
+                let cellRows = table.rows.map { cells in
+                    cells.map { systemLines(from: $0.content.text, pageIndex: pageIndex) }
                 }
-                guard !blocks.isEmpty else { continue }
-                let region = LayoutRegion(
-                    id: "system-p\(pageIndex)-table\(tableIndex)", kind: .table, source: .system,
-                    blocks: blocks, bbox: table.boundingRegion.boundingBox.cgRect
-                )
+                guard let region = Self.systemTableRegion(
+                    pageIndex: pageIndex, tableIndex: tableIndex, cellRows: cellRows,
+                    bbox: table.boundingRegion.boundingBox.cgRect
+                ) else { continue }
                 regions.append(region)
-                occupied.append(region.bbox)
             }
             for (listIndex, list) in document.lists.enumerated() {
                 let blocks = list.items.enumerated().compactMap { itemIndex, item -> LayoutBlock? in
@@ -108,12 +102,9 @@ public struct OCRService: Sendable {
                     blocks: blocks, bbox: list.boundingRegion.boundingBox.cgRect
                 )
                 regions.append(region)
-                occupied.append(region.bbox)
             }
             for (paragraphIndex, paragraph) in document.paragraphs.enumerated() {
-                let bounds = paragraph.boundingRegion.boundingBox.cgRect
-                guard !occupied.contains(where: { Self.overlapRatio(bounds, $0) >= 0.5 }),
-                      let region = systemTextRegion(
+                guard let region = systemTextRegion(
                         paragraph, pageIndex: pageIndex,
                         id: "system-p\(pageIndex)-paragraph\(paragraphIndex)", regionKind: .body, blockKind: .paragraph
                       ) else { continue }
@@ -166,10 +157,55 @@ public struct OCRService: Sendable {
 
     static func removingBodyRegionsOverlappingSpecializedRegions(_ regions: [LayoutRegion]) -> [LayoutRegion] {
         let specializedBounds = regions.filter { $0.kind == .table || $0.kind == .list || $0.kind == .title }.map(\.bbox)
-        return regions.filter { region in
-            guard region.kind == .body else { return true }
-            return !specializedBounds.contains { overlapRatio(region.bbox, $0) >= 0.5 }
+        return regions.compactMap { region in
+            guard region.kind == .body else { return region }
+            let blocks = region.blocks.compactMap { block -> LayoutBlock? in
+                let lines = block.lines.filter { line in
+                    !specializedBounds.contains { overlapRatio(line.bbox, $0) >= 0.8 }
+                }
+                guard !lines.isEmpty else { return nil }
+                let unchanged = lines.count == block.lines.count
+                return LayoutBlock(
+                    id: block.id, kind: block.kind, lines: lines,
+                    bbox: unchanged ? block.bbox : nil, tableCells: block.tableCells
+                )
+            }
+            guard !blocks.isEmpty else { return nil }
+            return LayoutRegion(
+                id: region.id, kind: region.kind, source: region.source,
+                blocks: blocks, bbox: blocks == region.blocks ? region.bbox : nil
+            )
         }
+    }
+
+    static func systemTableRegion(
+        pageIndex: Int,
+        tableIndex: Int,
+        cellRows: [[[TextLine]]],
+        bbox: CGRect? = nil
+    ) -> LayoutRegion? {
+        let blocks = cellRows.enumerated().compactMap { rowIndex, cells -> LayoutBlock? in
+            let tableCells = cells.enumerated().compactMap { columnIndex, lines -> LayoutTableCell? in
+                let ordered = lines.sorted {
+                    if $0.bbox.midY != $1.bbox.midY { return $0.bbox.midY > $1.bbox.midY }
+                    if $0.bbox.minX != $1.bbox.minX { return $0.bbox.minX < $1.bbox.minX }
+                    return $0.text < $1.text
+                }
+                return ordered.isEmpty ? nil : LayoutTableCell(columnIndex: columnIndex, lines: ordered)
+            }
+            guard !tableCells.isEmpty else { return nil }
+            return LayoutBlock(
+                id: .init("system-p\(pageIndex)-table\(tableIndex)-row\(rowIndex)"),
+                kind: .tableRow,
+                lines: tableCells.flatMap(\.lines),
+                tableCells: tableCells
+            )
+        }
+        guard !blocks.isEmpty else { return nil }
+        return LayoutRegion(
+            id: "system-p\(pageIndex)-table\(tableIndex)", kind: .table, source: .system,
+            blocks: blocks, bbox: bbox
+        )
     }
 
     private static func overlapRatio(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {

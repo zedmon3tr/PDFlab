@@ -40,10 +40,12 @@ enum PageReadingOrder {
         }
         let tableRegions = tableDetections.enumerated().map { tableIndex, detection in
             let blocks = detection.rows.enumerated().map { rowIndex, indexes in
-                LayoutBlock(
+                let cells = indexes.map { lines[$0] }.sorted { $0.bbox.minX < $1.bbox.minX }
+                return LayoutBlock(
                     id: .init("p\(pageIndex)-table\(tableIndex)-row\(rowIndex)"),
                     kind: .tableRow,
-                    lines: indexes.map { lines[$0] }.sorted { $0.bbox.minX < $1.bbox.minX }
+                    lines: cells,
+                    tableCells: cells.enumerated().map { .init(columnIndex: $0.offset, lines: [$0.element]) }
                 )
             }
             return LayoutRegion(

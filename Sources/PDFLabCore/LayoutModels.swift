@@ -22,16 +22,34 @@ public enum LayoutBlockKind: Equatable, Sendable {
     case tableRow
 }
 
+public struct LayoutTableCell: Equatable, Sendable {
+    public var columnIndex: Int
+    public var lines: [TextLine]
+
+    public init(columnIndex: Int, lines: [TextLine]) {
+        self.columnIndex = columnIndex
+        self.lines = lines
+    }
+}
+
 public struct LayoutBlock: Equatable, Sendable {
     public var id: LayoutBlockID
     public var kind: LayoutBlockKind
     public var bbox: CGRect
     public var lines: [TextLine]
+    public var tableCells: [LayoutTableCell]
 
-    public init(id: LayoutBlockID, kind: LayoutBlockKind, lines: [TextLine], bbox: CGRect? = nil) {
+    public init(
+        id: LayoutBlockID,
+        kind: LayoutBlockKind,
+        lines: [TextLine],
+        bbox: CGRect? = nil,
+        tableCells: [LayoutTableCell] = []
+    ) {
         self.id = id
         self.kind = kind
         self.lines = lines
+        self.tableCells = tableCells
         self.bbox = bbox ?? Self.bounds(of: lines)
     }
 
