@@ -20,12 +20,12 @@ struct ExportParagraphLayout: Equatable, Sendable {
 enum ExportTypography {
     static let pageWidth: CGFloat = 595
     static let pageHeight: CGFloat = 842
-    static let margin: CGFloat = 60
+    static let margin: CGFloat = 72
     static let fontSize: CGFloat = 12
-    static let lineHeight: CGFloat = fontSize * 1.4
+    static let lineHeight: CGFloat = fontSize * 1.6
     static let contentWidth: CGFloat = pageWidth - 2 * margin
     static let sourceGray: CGFloat = 0.30
-    static let intraGroupSpacing: CGFloat = 3
+    static let intraGroupSpacing: CGFloat = lineHeight * 0.25
 
     static func layout(for text: String, spacingAfter: ExportParagraphSpacing) -> ExportParagraphLayout {
         let cjk = isCJKParagraph(text)
@@ -34,7 +34,7 @@ enum ExportTypography {
         case .intraGroup:
             paragraphSpacing = intraGroupSpacing
         case .outer:
-            paragraphSpacing = cjk ? 4.2 : 8.4
+            paragraphSpacing = lineHeight * 0.5
         }
         return ExportParagraphLayout(
             lineHeight: lineHeight,

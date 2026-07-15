@@ -189,6 +189,8 @@ public struct PDFExporter: Exporter {
                 state.beginPage()
             }
         }
+        // Each block owns its framesetter, so terminal Core Text paragraph spacing is not carried to the next block.
+        state.cursorY -= ExportTypography.layout(for: text, spacingAfter: spacingAfter).paragraphSpacing
     }
 
     static func paginationDecision(visibleLength: Int, pageIsEmpty: Bool) -> PaginationDecision {
@@ -228,7 +230,6 @@ public struct PDFExporter: Exporter {
         var alignment = CTTextAlignment.left
         var minimumLineHeight = layout.lineHeight
         var maximumLineHeight = layout.lineHeight
-        var paragraphSpacing = layout.paragraphSpacing
         var firstLineIndent = layout.firstLineIndent
         let usesSemanticMetrics: Bool
         switch kind {
@@ -243,37 +244,30 @@ public struct PDFExporter: Exporter {
         let paragraphStyle = withUnsafePointer(to: &alignment) { alignmentPointer in
             withUnsafePointer(to: &minimumLineHeight) { minimumPointer in
                 withUnsafePointer(to: &maximumLineHeight) { maximumPointer in
-                    withUnsafePointer(to: &paragraphSpacing) { spacingPointer in
-                        withUnsafePointer(to: &firstLineIndent) { indentPointer in
-                            let settings = [
-                                CTParagraphStyleSetting(
-                                    spec: .alignment,
-                                    valueSize: MemoryLayout<CTTextAlignment>.size,
-                                    value: alignmentPointer
-                                ),
-                                CTParagraphStyleSetting(
-                                    spec: .minimumLineHeight,
-                                    valueSize: MemoryLayout<CGFloat>.size,
-                                    value: minimumPointer
-                                ),
-                                CTParagraphStyleSetting(
-                                    spec: .maximumLineHeight,
-                                    valueSize: MemoryLayout<CGFloat>.size,
-                                    value: maximumPointer
-                                ),
-                                CTParagraphStyleSetting(
-                                    spec: .paragraphSpacing,
-                                    valueSize: MemoryLayout<CGFloat>.size,
-                                    value: spacingPointer
-                                ),
-                                CTParagraphStyleSetting(
-                                    spec: .firstLineHeadIndent,
-                                    valueSize: MemoryLayout<CGFloat>.size,
-                                    value: indentPointer
-                                ),
-                            ]
-                            return CTParagraphStyleCreate(settings, settings.count)
-                        }
+                    withUnsafePointer(to: &firstLineIndent) { indentPointer in
+                        let settings = [
+                            CTParagraphStyleSetting(
+                                spec: .alignment,
+                                valueSize: MemoryLayout<CTTextAlignment>.size,
+                                value: alignmentPointer
+                            ),
+                            CTParagraphStyleSetting(
+                                spec: .minimumLineHeight,
+                                valueSize: MemoryLayout<CGFloat>.size,
+                                value: minimumPointer
+                            ),
+                            CTParagraphStyleSetting(
+                                spec: .maximumLineHeight,
+                                valueSize: MemoryLayout<CGFloat>.size,
+                                value: maximumPointer
+                            ),
+                            CTParagraphStyleSetting(
+                                spec: .firstLineHeadIndent,
+                                valueSize: MemoryLayout<CGFloat>.size,
+                                value: indentPointer
+                            ),
+                        ]
+                        return CTParagraphStyleCreate(settings, settings.count)
                     }
                 }
             }

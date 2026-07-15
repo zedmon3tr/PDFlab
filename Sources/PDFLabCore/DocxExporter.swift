@@ -181,7 +181,7 @@ public struct DocxExporter: Exporter {
         return escaped
     }
 
-    private static let sectionPropertiesXML = "<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/><w:pgMar w:top=\"1200\" w:right=\"1200\" w:bottom=\"1200\" w:left=\"1200\"/></w:sectPr>"
+    private static let sectionPropertiesXML = "<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/><w:pgMar w:top=\"1440\" w:right=\"1440\" w:bottom=\"1440\" w:left=\"1440\"/></w:sectPr>"
 
     // MARK: - Static package members
 
