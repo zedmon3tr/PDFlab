@@ -10,13 +10,26 @@ enum PageReadingOrder {
         return recursiveOrder(lines, depth: 0)
     }
 
-    static func layout(_ lines: [TextLine], pageIndex: Int, orderedLines: [TextLine]? = nil) -> PageLayout {
-        let tableDetections = TableRegionDetector.detect(in: lines)
+    static func layout(
+        _ lines: [TextLine],
+        pageIndex: Int,
+        orderedLines: [TextLine]? = nil,
+        tableCandidates: [TextLine]? = nil
+    ) -> PageLayout {
+        let detectionLines = tableCandidates ?? lines
+        let tableDetections = TableRegionDetector.detect(in: detectionLines)
         let tableIndexes = Set(tableDetections.flatMap { $0.rows.flatMap { $0 } })
-        let bodyLines = lines.indices.filter { !tableIndexes.contains($0) }.map { lines[$0] }
         let tableBounds = tableDetections.map { detection in
-            detection.rows.flatMap { $0 }.map { lines[$0].bbox }
+            detection.rows.flatMap { $0 }.map { detectionLines[$0].bbox }
                 .reduce(CGRect.null) { $0.union($1) }.standardized
+        }
+        let bodyLines: [TextLine]
+        if tableCandidates == nil {
+            bodyLines = lines.indices.filter { !tableIndexes.contains($0) }.map { lines[$0] }
+        } else {
+            bodyLines = lines.filter { line in
+                !tableBounds.contains { bounds in overlapRatio(line.bbox, bounds) >= 0.98 }
+            }
         }
         let groups = tableBounds.reduce(recursiveRegions(bodyLines, depth: 0)) { groups, tableBounds in
             groups.flatMap { group -> [[TextLine]] in
@@ -40,7 +53,7 @@ enum PageReadingOrder {
         }
         let tableRegions = tableDetections.enumerated().map { tableIndex, detection in
             let blocks = detection.rows.enumerated().map { rowIndex, indexes in
-                let cells = indexes.map { lines[$0] }.sorted { $0.bbox.minX < $1.bbox.minX }
+                let cells = indexes.map { detectionLines[$0] }.sorted { $0.bbox.minX < $1.bbox.minX }
                 return LayoutBlock(
                     id: .init("p\(pageIndex)-table\(tableIndex)-row\(rowIndex)"),
                     kind: .tableRow,
@@ -52,12 +65,18 @@ enum PageReadingOrder {
                 id: "p\(pageIndex)-table\(tableIndex)", kind: .table, source: .heuristic, blocks: blocks
             )
         }
-        let projection = orderedLines ?? order(lines)
         for table in tableRegions.sorted(by: { $0.bbox.maxY > $1.bbox.maxY }) {
             let insertion = regions.firstIndex { table.bbox.minY >= $0.bbox.maxY } ?? regions.endIndex
             regions.insert(table, at: insertion)
         }
+        let projection = orderedLines ?? (tableCandidates == nil ? order(lines) : regions.flatMap(\.flattenedLines))
         return PageLayout(pageIndex: pageIndex, regions: regions, orderedLines: projection)
+    }
+
+    private static func overlapRatio(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
+        let intersection = lhs.intersection(rhs)
+        guard !intersection.isNull, lhs.width > 0, lhs.height > 0 else { return 0 }
+        return intersection.width * intersection.height / (lhs.width * lhs.height)
     }
 
     private static func recursiveRegions(_ lines: [TextLine], depth: Int) -> [[TextLine]] {

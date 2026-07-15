@@ -223,12 +223,14 @@ public struct OCRService: Sendable {
     }
 
     static func removingBodyRegionsOverlappingSpecializedRegions(_ regions: [LayoutRegion]) -> [LayoutRegion] {
-        let specializedBounds = regions.filter { $0.kind == .table || $0.kind == .list || $0.kind == .title }.map(\.bbox)
+        let specializedRegions = regions.filter { $0.kind == .table || $0.kind == .list || $0.kind == .title }
         return regions.compactMap { region in
             guard region.kind == .body else { return region }
             let blocks = region.blocks.compactMap { block -> LayoutBlock? in
                 let lines = block.lines.filter { line in
-                    !specializedBounds.contains { overlapRatio(line.bbox, $0) >= 0.8 }
+                    !specializedRegions.contains { specialized in
+                        isProvenDuplicate(line, of: specialized)
+                    }
                 }
                 guard !lines.isEmpty else { return nil }
                 let unchanged = lines.count == block.lines.count
@@ -243,6 +245,20 @@ public struct OCRService: Sendable {
                 blocks: blocks, bbox: blocks == region.blocks ? region.bbox : nil
             )
         }
+    }
+
+    private static func isProvenDuplicate(_ line: TextLine, of specialized: LayoutRegion) -> Bool {
+        if specialized.bbox.contains(line.bbox) { return true }
+        let text = normalizedComparisonText(line.text)
+        guard !text.isEmpty else { return false }
+        return specialized.flattenedLines.contains { specializedLine in
+            normalizedComparisonText(specializedLine.text) == text
+                && overlapRatio(line.bbox, specializedLine.bbox) >= 0.5
+        }
+    }
+
+    private static func normalizedComparisonText(_ text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased()
     }
 
     static func systemTableRegion(
@@ -287,7 +303,7 @@ public struct OCRService: Sendable {
         level: TextRecognitionLevel
     ) async throws -> OCRPageResult {
         try Task.checkCancellation()
-        if #available(macOS 15.0, *) {
+        if #available(macOS 26.0, *) {
             return try await runModernTextRecognition(image, pageIndex: pageIndex, level: level)
         }
 
@@ -338,16 +354,23 @@ public struct OCRService: Sendable {
                 }
 
                 let observations = (request.results as? [VNRecognizedTextObservation]) ?? []
-                let lines = observations.compactMap { observation -> TextLine? in
-                    guard let candidate = observation.topCandidates(1).first else { return nil }
-                    return TextLine(
+                var lines: [TextLine] = []
+                var tableCandidates: [TextLine] = []
+                for observation in observations {
+                    guard let candidate = observation.topCandidates(1).first else { continue }
+                    lines.append(TextLine(
                         text: candidate.string,
                         pageIndex: pageIndex,
                         bbox: observation.boundingBox,
                         confidence: Double(candidate.confidence)
-                    )
+                    ))
+                    tableCandidates += Self.legacyWordLines(from: candidate, pageIndex: pageIndex)
                 }
-                continuation.resume(returning: self.normalizedResult(lines, pageIndex: pageIndex))
+                continuation.resume(returning: self.normalizedResult(
+                    lines,
+                    pageIndex: pageIndex,
+                    tableCandidates: tableCandidates
+                ))
             }
             request.revision = VNRecognizeTextRequestRevision3
             request.recognitionLevel = level == .fast ? .fast : .accurate
@@ -365,7 +388,7 @@ public struct OCRService: Sendable {
     }
 
     private func textScreeningLevel() -> TextRecognitionLevel {
-        if #available(macOS 15.0, *) {
+        if #available(macOS 26.0, *) {
             var request = RecognizeTextRequest()
             request.recognitionLevel = .fast
             return request.supportedRecognitionLanguages.contains(languages[0]) ? .fast : .accurate
@@ -375,6 +398,22 @@ public struct OCRService: Sendable {
         request.recognitionLevel = .fast
         let supported = (try? request.supportedRecognitionLanguages()) ?? []
         return supported.contains(legacyLanguageIdentifiers[0]) ? .fast : .accurate
+    }
+
+    private static func legacyWordLines(from candidate: VNRecognizedText, pageIndex: Int) -> [TextLine] {
+        var lines: [TextLine] = []
+        let text = candidate.string
+        text.enumerateSubstrings(in: text.startIndex..<text.endIndex, options: [.byWords, .substringNotRequired]) {
+            _, range, _, _ in
+            guard let box = try? candidate.boundingBox(for: range) else { return }
+            lines.append(TextLine(
+                text: String(text[range]),
+                pageIndex: pageIndex,
+                bbox: box.boundingBox,
+                confidence: Double(candidate.confidence)
+            ))
+        }
+        return lines
     }
 
     static func needsCorrection(_ result: OCRPageResult) -> Bool {
@@ -429,9 +468,18 @@ public struct OCRService: Sendable {
         #endif
     }
 
-    private func normalizedResult(_ lines: [TextLine], pageIndex: Int) -> OCRPageResult {
+    private func normalizedResult(
+        _ lines: [TextLine],
+        pageIndex: Int,
+        tableCandidates: [TextLine]? = nil
+    ) -> OCRPageResult {
         let normalized = Self.normalizeLines(lines)
-        return result(layout: PageReadingOrder.layout(normalized, pageIndex: pageIndex))
+        let normalizedCandidates = tableCandidates.map(Self.normalizeLines)
+        return result(layout: PageReadingOrder.layout(
+            normalized,
+            pageIndex: pageIndex,
+            tableCandidates: normalizedCandidates
+        ))
     }
 
     private func result(layout: PageLayout) -> OCRPageResult {
