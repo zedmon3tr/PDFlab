@@ -9,19 +9,36 @@ APP_DIR="$DIST_DIR/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
-BINARY_SRC="$ROOT/.build/release/PDFLabApp"
 BINARY_DST="$MACOS_DIR/$APP_NAME"
 VERSION="$(bash "$ROOT/scripts/app_version.sh")"
 ICON_SRC="$ROOT/Resources/AppIcon.icns"
+UNIVERSAL_BUILD_DIR="$ROOT/.build/universal-release"
+ARM64_TRIPLE="arm64-apple-macosx14.0"
+X86_64_TRIPLE="x86_64-apple-macosx14.0"
+ARM64_BUILD_DIR="$UNIVERSAL_BUILD_DIR/arm64"
+X86_64_BUILD_DIR="$UNIVERSAL_BUILD_DIR/x86_64"
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Library/Developer/CommandLineTools}"
 
 cd "$ROOT"
-swift build -c release
+ARM64_BIN_DIR="$(swift build -c release --triple "$ARM64_TRIPLE" --scratch-path "$ARM64_BUILD_DIR" --show-bin-path)"
+X86_64_BIN_DIR="$(swift build -c release --triple "$X86_64_TRIPLE" --scratch-path "$X86_64_BUILD_DIR" --show-bin-path)"
+ARM64_BINARY="$ARM64_BIN_DIR/PDFLabApp"
+X86_64_BINARY="$X86_64_BIN_DIR/PDFLabApp"
+
+swift build -c release --triple "$ARM64_TRIPLE" --scratch-path "$ARM64_BUILD_DIR"
+swift build -c release --triple "$X86_64_TRIPLE" --scratch-path "$X86_64_BUILD_DIR"
+
+for binary in "$ARM64_BINARY" "$X86_64_BINARY"; do
+    [[ -f "$binary" ]] || { echo "Missing architecture slice: $binary" >&2; exit 1; }
+done
 
 rm -rf "$APP_DIR"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
-cp "$BINARY_SRC" "$BINARY_DST"
+lipo -create "$ARM64_BINARY" "$X86_64_BINARY" -output "$BINARY_DST"
+ARCHITECTURES="$(lipo -archs "$BINARY_DST")"
+[[ " $ARCHITECTURES " == *" arm64 "* ]] || { echo "Universal binary is missing arm64" >&2; exit 1; }
+[[ " $ARCHITECTURES " == *" x86_64 "* ]] || { echo "Universal binary is missing x86_64" >&2; exit 1; }
 if [[ -f "$ICON_SRC" ]]; then
     cp "$ICON_SRC" "$RESOURCES_DIR/AppIcon.icns"
 fi
@@ -58,5 +75,6 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 PLIST
 
 codesign --force --deep -s - "$APP_DIR"
+codesign --verify --deep --strict --all-architectures "$APP_DIR"
 
-echo "Built $APP_DIR"
+echo "Built $APP_DIR ($ARCHITECTURES)"
