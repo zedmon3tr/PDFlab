@@ -4,7 +4,7 @@
 // 测试文件一律不要直接 import Foundation,经 @testable import PDFLabCore 传递获得。
 @_exported import Foundation
 
-public enum PDFLabCoreInfo { public static let version = "0.1.3" }
+public enum PDFLabCoreInfo { public static let version = "0.1.4" }
 
 public struct LayoutBlockID: RawRepresentable, Hashable, Equatable, Sendable {
     public var rawValue: String
