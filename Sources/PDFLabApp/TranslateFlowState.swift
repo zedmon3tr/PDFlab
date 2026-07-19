@@ -5,8 +5,7 @@ struct TranslateFlowState: Equatable {
         case idle
         case optionsReady
         case running
-        case previewing
-        case saved
+        case completed
     }
 
     var phase: Phase = .idle
@@ -23,7 +22,6 @@ struct TranslateFlowState: Equatable {
     var runStartedAt: Date?
     var composed: ComposedDocument?
     var parsed: ParsedDocument?
-    var outputURL: URL?
     var previewPageIndex = 0
     var previewPageCount = 1
     /// 本次翻译临时选用的引擎(默认跟随全局设置;仅本次运行生效,不写回设置)。
@@ -42,7 +40,6 @@ struct TranslateFlowState: Equatable {
         runStartedAt = nil
         composed = nil
         parsed = nil
-        outputURL = nil
         previewPageIndex = 0
         previewPageCount = max(1, pageCount)
         engineID = TranslationEngineDescriptor.defaultID
@@ -52,7 +49,6 @@ struct TranslateFlowState: Equatable {
     mutating func startRunning(now: Date = Date()) {
         progress = nil
         runStartedAt = now
-        outputURL = nil
         phase = .running
     }
 
@@ -60,16 +56,11 @@ struct TranslateFlowState: Equatable {
         self.progress = progress
     }
 
-    mutating func markPreview(composed: ComposedDocument, parsed: ParsedDocument) {
-        self.composed = composed
-        self.parsed = parsed
+    mutating func markCompleted(composed: ComposedDocument? = nil, parsed: ParsedDocument? = nil) {
+        if let composed { self.composed = composed }
+        if let parsed { self.parsed = parsed }
         runStartedAt = nil
-        phase = .previewing
-    }
-
-    mutating func markSaved(outputURL: URL) {
-        self.outputURL = outputURL
-        phase = .saved
+        phase = .completed
     }
 
     mutating func reset() {

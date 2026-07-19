@@ -27,6 +27,7 @@ struct MainView: View {
     @State private var missingEntry: HistoryEntry?
     @State private var launchUpdate: UpdateInfo?
     @State private var passwordInput = ""
+    @State private var lossSaveInProgress = false
 
     var body: some View {
         content
@@ -63,20 +64,24 @@ struct MainView: View {
                 guard case .success(let urls) = result, let url = urls.first else { return }
                 open(url: url)
             }
-            .sheet(item: $translateDialog) { request in
+            .sheet(item: translationSheetBinding) { request in
                 TranslateFlowView(
                     url: request.url,
                     openInViewer: { sourceURL, outputURL in
                         translateDialog = nil
                         // 翻译完成"立即对照查看":整体替换会话并直接进对照。
                         session.replacePair(source: sourceURL, output: outputURL)
+                        if let id = app.translationResult.artifact?.id {
+                            session.setTranslationArtifact(id: id, side: .secondary, isDirty: app.translationResult.artifact?.isDirty == true)
+                        }
                     },
                     close: {
-                        translateDialog = nil
+                        requestTranslationLoss(.closeSheet) { translateDialog = nil }
                     }
                 )
                 .environmentObject(app)
                 .frame(width: TranslateOptionsLayout.dialogWidth, height: TranslateOptionsLayout.dialogHeight)
+                .interactiveDismissDisabled(true)
             }
             // 设置面板:固定尺寸主窗口 sheet(替代已弃用的 Settings 独立窗口场景)。
             .sheet(isPresented: $app.settingsPresented) {
@@ -180,16 +185,18 @@ struct MainView: View {
                 DocumentTabView(
                     title: primary.title,
                     isActive: session.isTabActive(.primary),
+                    isUnsaved: session.isTabUnsaved(.primary),
                     onFocus: { session.focusTab(.primary) },
-                    onCloseTab: { session.closeTab(.primary) }
+                    onCloseTab: { requestTabClose(.primary) }
                 )
             }
             if let secondary = session.secondary {
                 DocumentTabView(
                     title: secondary.title,
                     isActive: session.isTabActive(.secondary),
+                    isUnsaved: session.isTabUnsaved(.secondary),
                     onFocus: { session.focusTab(.secondary) },
-                    onCloseTab: { session.closeTab(.secondary) }
+                    onCloseTab: { requestTabClose(.secondary) }
                 )
             }
             // 已开满 2 个文档时隐藏 "+"。
@@ -281,6 +288,129 @@ struct MainView: View {
         )
     }
 
+    /// A titlebar close is a replacement of the sheet binding too. Route it through
+    /// the same loss policy as the in-sheet close action instead of silently nil-ing it.
+    private var translationSheetBinding: Binding<TranslateDialogRequest?> {
+        Binding(
+            get: { translateDialog },
+            set: { request in
+                guard request == nil, translateDialog != nil else {
+                    translateDialog = request
+                    return
+                }
+                requestTranslationLoss(.closeSheet) { translateDialog = nil }
+            }
+        )
+    }
+
+    private func requestTranslationLoss(_ action: TranslationLossAction, then continuation: @escaping () -> Void) {
+        guard !lossSaveInProgress else {
+            NSSound.beep()
+            return
+        }
+        guard UnsavedTranslationPolicy.requiresConfirmation(
+            isDirty: app.translationResult.hasUnsavedArtifact, action: action
+        ) else {
+            continuation()
+            return
+        }
+        guard let artifact = app.translationResult.artifact else { return }
+        let alert = NSAlert()
+        alert.messageText = L10n.t("translation.unsaved.title")
+        alert.informativeText = L10n.t("translation.unsaved.message")
+        alert.addButton(withTitle: L10n.t("translation.saveAs"))
+        alert.addButton(withTitle: L10n.t("translation.discard"))
+        if alert.runModal() == .alertSecondButtonReturn {
+            if action == .startTranslation { removeTranslationTab(artifact.id) }
+            app.translationResult.discard()
+            continuation()
+            return
+        }
+        saveTranslationLossArtifact(artifact, then: continuation)
+    }
+
+    private func requestTabClose(_ side: ViewerSide) {
+        guard session.isTabUnsaved(side) else { closeTabAndCleanTemporary(side); return }
+        requestTranslationLoss(.closeTab) { closeTabAndCleanTemporary(side) }
+    }
+
+    private func discardActiveTranslationResult() {
+        if let id = app.translationResult.artifact?.id {
+            if session.translationID(for: .secondary) == id { session.closeTab(.secondary) }
+            else if session.translationID(for: .primary) == id { session.closeTab(.primary) }
+        }
+        app.translationResult.discard()
+    }
+
+    private func beginNewTranslation() {
+        discardActiveTranslationResult()
+        pendingModule = .translate
+        showFileImporter = true
+    }
+
+    private func removeTranslationTab(_ id: UUID) {
+        if session.translationID(for: .secondary) == id { session.closeTab(.secondary) }
+        else if session.translationID(for: .primary) == id { session.closeTab(.primary) }
+    }
+
+    private func closeTabAndCleanTemporary(_ side: ViewerSide) {
+        let id = session.translationID(for: side)
+        let saved = id == app.translationResult.artifact?.id && !app.translationResult.hasUnsavedArtifact
+        session.closeTab(side)
+        if saved { app.translationResult.discard() }
+    }
+
+    private func saveTranslationLossArtifact(_ artifact: TranslationArtifact, then continuation: @escaping () -> Void) {
+        guard !lossSaveInProgress else { return }
+        let artifactID = artifact.id
+        lossSaveInProgress = true
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [saveContentType(for: artifact.options.format)]
+        panel.canCreateDirectories = true
+        let defaultURL = TranslateFlowState.defaultOutputURL(sourceURL: artifact.sourceURL, format: artifact.options.format)
+        panel.directoryURL = defaultURL.deletingLastPathComponent()
+        panel.nameFieldStringValue = defaultURL.lastPathComponent
+        guard panel.runModal() == .OK, let outputURL = panel.url else {
+            lossSaveInProgress = false
+            return
+        }
+        Task {
+            defer { lossSaveInProgress = false }
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try TranslateFlowView.performExport(
+                        artifact.composed, to: outputURL, sourceURL: artifact.sourceURL,
+                        format: artifact.options.format, uiLanguageChinese: L10n.isChinese
+                    )
+                }.value
+                guard app.translationResult.artifact?.id == artifactID else {
+                    let mismatch = NSError(
+                        domain: "PDFLab.Translation",
+                        code: 1,
+                        userInfo: [
+                            NSLocalizedDescriptionKey: L10n.t("translate.saveFailed")
+                        ]
+                    )
+                    NSAlert(error: mismatch).runModal()
+                    return
+                }
+                app.translationResult.markSaved(to: outputURL)
+                session.markTranslationSaved(id: artifactID)
+                continuation()
+            } catch {
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    private func saveContentType(for format: OutputFormat) -> UTType {
+        switch format {
+        case .markdown: return UTType(filenameExtension: "md") ?? .plainText
+        case .pdf: return .pdf
+        case .docx: return UTType(filenameExtension: "docx") ?? .data
+        }
+    }
+
     // MARK: - 模块与最近打开
 
     private var moduleArea: some View {
@@ -309,8 +439,7 @@ struct MainView: View {
                 subtitle: L10n.t("main.translate.subtitle"),
                 systemImage: "character.book.closed"
             ) {
-                pendingModule = .translate
-                showFileImporter = true
+                requestTranslationLoss(.startTranslation) { beginNewTranslation() }
             }
             moduleCard(
                 title: L10n.t("main.convert"),
@@ -525,6 +654,7 @@ enum DocumentTabHoverMetrics {
 private struct DocumentTabView: View {
     let title: String
     let isActive: Bool
+    let isUnsaved: Bool
     let onFocus: () -> Void
     let onCloseTab: () -> Void
 
@@ -537,13 +667,20 @@ private struct DocumentTabView: View {
         HStack(spacing: 8) {
             // 标签主体可点 → 聚焦该侧(首页点击 = 回查看器)。
             Button(action: onFocus) {
-                Text(title)
-                    .font(.callout)
-                    .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth: ViewerTabMetrics.maxTitleWidth, alignment: .leading)
-                    .contentShape(Rectangle())
+                HStack(spacing: 4) {
+                    Text(title)
+                        .font(.callout)
+                        .foregroundStyle(isActive ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: ViewerTabMetrics.maxTitleWidth, alignment: .leading)
+                    if isUnsaved {
+                        Text(L10n.t("translation.unsaved.marker"))
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(.orange)
+                    }
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help(title)

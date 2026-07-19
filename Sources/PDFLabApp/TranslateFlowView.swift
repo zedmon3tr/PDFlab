@@ -21,6 +21,7 @@ struct TranslateFlowView: View {
     @State private var directionRequest: TranslateDirectionRequest?
     @State private var alert: TranslateAlert?
     @State private var runTask: Task<Void, Never>?
+    @State private var runGeneration = UUID()
     @State private var isSaving = false
 
     init(
@@ -127,10 +128,8 @@ struct TranslateFlowView: View {
             optionsView
         case .running:
             runningView
-        case .previewing:
-            previewingView
-        case .saved:
-            savedView
+        case .completed:
+            completedView
         }
     }
 
@@ -417,79 +416,46 @@ struct TranslateFlowView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var previewingView: some View {
-        VStack(spacing: 0) {
-            if let composed = state.composed {
-                PreviewView(
-                    document: composed,
-                    content: state.options.content,
-                    lowQualityPages: state.parsed?.lowQualityPages ?? [],
-                    cleanupSummary: state.parsed?.cleanupSummary ?? .init()
-                )
-            }
-            Divider()
+    private var completedView: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 30))
+                .foregroundStyle(.green)
+            Text(L10n.t("translation.completed.title"))
+                .font(.title3.weight(.semibold))
+            Text(state.sourceURL?.lastPathComponent ?? "")
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
             HStack {
+                Button {
+                    if let sourceURL = app.translationResult.artifact?.sourceURL,
+                       let temporaryURL = app.translationResult.artifact?.temporaryPDFURL {
+                        app.history.record(url: sourceURL)
+                        openInViewer(sourceURL, temporaryURL)
+                    }
+                } label: {
+                    Label(L10n.t("translation.compareNow"), systemImage: "rectangle.split.2x1")
+                }
+                .buttonStyle(HoverButtonStyle(variant: .primary))
+                .disabled(app.translationResult.artifact?.temporaryPDFURL == nil || isSaving)
+
                 Button {
                     saveCurrentDocument()
                 } label: {
-                    Label(L10n.t("translate.save"), systemImage: "square.and.arrow.down")
-                }
-                .buttonStyle(HoverButtonStyle(variant: .primary))
-                .disabled(isSaving)
-
-                Button(L10n.t("translate.backToOptions")) {
-                    state.phase = .optionsReady
+                    Label(L10n.t("translation.saveAs"), systemImage: "square.and.arrow.down")
                 }
                 .buttonStyle(HoverButtonStyle())
                 .disabled(isSaving)
 
-                if isSaving {
-                    ProgressView()
-                        .controlSize(.small)
-                }
-                Spacer()
-            }
-            .padding(12)
-        }
-    }
-
-    private var savedView: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Label(L10n.t("translate.saved.title"), systemImage: "checkmark.circle.fill")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.green)
-
-            if let outputURL = state.outputURL {
-                Text(outputURL.path)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
-
-            HStack {
-                Button {
-                    if let sourceURL = state.sourceURL, let outputURL = state.outputURL {
-                        app.history.record(url: sourceURL)
-                        openInViewer(sourceURL, outputURL)
-                    }
-                } label: {
-                    Label(L10n.t("translate.openInViewer"), systemImage: "rectangle.split.2x1")
-                }
-                .buttonStyle(HoverButtonStyle(variant: .primary))
-                .disabled(state.sourceURL == nil || state.outputURL == nil)
-
-                Button(L10n.t("translate.saveAgain")) {
-                    state.phase = .previewing
-                }
-                .buttonStyle(HoverButtonStyle())
-                Button(L10n.t("translate.newFile")) {
+                Button(L10n.t("viewer.closeTab")) {
                     closeFlow()
                 }
                 .buttonStyle(HoverButtonStyle())
+                .disabled(isSaving)
             }
+            if isSaving { ProgressView().controlSize(.small) }
         }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var fileHeader: some View {
@@ -572,6 +538,8 @@ struct TranslateFlowView: View {
             return
         }
         runTask?.cancel()
+        let generation = UUID()
+        runGeneration = generation
         state.startRunning()
 
         let input = PipelineInput(
@@ -592,9 +560,25 @@ struct TranslateFlowView: View {
                         state.update(progress: progress)
                     }
                 }
+                let comparison = TranslationResultController.comparisonDocument(from: composed)
+                let temporaryURL = try TranslationTempStore.reserveURL()
+                var installed = false
+                defer {
+                    if !installed { TranslationTempStore.remove(temporaryURL) }
+                }
+                try await Task.detached(priority: .userInitiated) {
+                    try PDFExporter().export(
+                        comparison, to: temporaryURL, uiLanguageChinese: L10n.isChinese, sourceURL: sourceURL
+                    )
+                }.value
+                try Task.checkCancellation()
                 await MainActor.run {
-                    state.markPreview(composed: composed, parsed: parsed)
+                    guard runGeneration == generation, !Task.isCancelled else { return }
+                    app.translationResult.install(composed: composed, sourceURL: sourceURL, options: state.options)
+                    app.translationResult.setTemporaryPDFURL(temporaryURL)
+                    state.markCompleted(composed: composed, parsed: parsed)
                     runTask = nil
+                    installed = true
                 }
             } catch PDFLabError.unsupportedLanguage(let detected) {
                 await MainActor.run {
@@ -631,6 +615,7 @@ struct TranslateFlowView: View {
     private func cancelRunningTask() {
         runTask?.cancel()
         runTask = nil
+        runGeneration = UUID()
         closeFlow()
     }
 
@@ -645,22 +630,22 @@ struct TranslateFlowView: View {
     }
 
     private func saveCurrentDocument() {
-        guard let composed = state.composed,
-              let sourceURL = state.sourceURL,
+        guard let artifact = app.translationResult.artifact,
               !isSaving else { return }
+        let artifactID = artifact.id
 
         // 保存面板必须留在主线程;真正的导出(CoreText 排版 / zip 子进程)
         // 移到主线程外执行,避免大文档导出时 UI 卡死(需求 §5 全程异步)。
         let panel = NSSavePanel()
         panel.allowedContentTypes = [saveContentType(for: state.options.format)]
         panel.canCreateDirectories = true
-        let defaultOutputURL = TranslateFlowState.defaultOutputURL(sourceURL: sourceURL, format: state.options.format)
+        let defaultOutputURL = TranslateFlowState.defaultOutputURL(sourceURL: artifact.sourceURL, format: artifact.options.format)
         panel.directoryURL = defaultOutputURL.deletingLastPathComponent()
         panel.nameFieldStringValue = defaultOutputURL.lastPathComponent
 
         guard panel.runModal() == .OK, let outputURL = panel.url else { return }
 
-        let format = state.options.format
+        let format = artifact.options.format
         let uiLanguageChinese = L10n.isChinese
         isSaving = true
         Task {
@@ -668,14 +653,15 @@ struct TranslateFlowView: View {
             do {
                 try await Task.detached(priority: .userInitiated) {
                     try Self.performExport(
-                        composed,
+                        artifact.composed,
                         to: outputURL,
-                        sourceURL: sourceURL,
+                        sourceURL: artifact.sourceURL,
                         format: format,
                         uiLanguageChinese: uiLanguageChinese
                     )
                 }.value
-                state.markSaved(outputURL: outputURL)
+                guard app.translationResult.artifact?.id == artifactID else { return }
+                app.translationResult.markSaved(to: outputURL)
             } catch let error as PDFLabError {
                 alert = TranslateAlert(title: L10n.t("translate.saveFailed"), message: translateErrorMessage(error))
             } catch {
@@ -684,7 +670,7 @@ struct TranslateFlowView: View {
         }
     }
 
-    private nonisolated static func performExport(
+    nonisolated static func performExport(
         _ document: ComposedDocument,
         to url: URL,
         sourceURL: URL,

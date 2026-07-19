@@ -7,6 +7,7 @@ import AppKit
 @main
 struct PDFLabApp: App {
     @StateObject private var appState = AppState()
+    @NSApplicationDelegateAdaptor(TranslationTerminationBridge.self) private var terminationBridge
 
     init() {
         // 开发运行时把通用可执行图标换成真实 logo(标题栏按钮读 NSApp.applicationIconImage)。
@@ -21,13 +22,17 @@ struct PDFLabApp: App {
                 // macOS 15 Apple 本地翻译宿主:常驻挂载,供 AppleLocalEngine 的
                 // legacyRunner 执行 .translationTask 会话。
                 .background(translationHostBackground)
-                .onAppear { appState.applyAppearance() }
+                .onAppear {
+                    appState.applyAppearance()
+                    TranslationTerminationBridge.owner = appState
+                }
         }
         .defaultSize(width: 960, height: 680)
         // 设置不再使用 `Settings` 独立窗口场景(关窗会腐蚀主窗口工具栏按钮状态,
         // 见 product-spec-changelog.md 2026-07-10),改为主窗口 sheet;
         // ⌘, 菜单命令在此接管,与齿轮按钮共用同一呈现状态。
         .commands {
+            CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .appSettings) {
                 Button(L10n.t("settings.menu")) {
                     appState.presentSettingsIfIdle()

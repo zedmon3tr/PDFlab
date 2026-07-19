@@ -178,6 +178,13 @@ enum L10n {
         "translate.tableSummary": ("检测到 %@ 个表格区域", "Detected %@ table region(s)"),
         "translate.preview.table": ("表格", "Table"),
         "translate.preview.page": ("第", "Page"),
+        "translation.completed.title": ("翻译完成", "Translation Complete"),
+        "translation.compareNow": ("立即对照查看", "Compare Now"),
+        "translation.unsaved.title": ("译文尚未保存", "Translation Not Saved"),
+        "translation.unsaved.message": ("译文尚未保存。放弃后将无法恢复，需要重新翻译。", "This translation has not been saved. Discarding it cannot be undone and requires translating again."),
+        "translation.saveAs": ("另存为…", "Save As…"),
+        "translation.discard": ("放弃译文", "Discard Translation"),
+        "translation.unsaved.marker": ("未保存", "Unsaved"),
 
         // 历史记录
         "history.title": ("最近打开", "Recent Files"),

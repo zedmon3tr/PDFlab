@@ -74,6 +74,32 @@ final class ViewerSession: ObservableObject {
     @Published var passwordFailure: String?
     /// 查看器是否前置(false = 首页;会话与文档保留)。
     @Published var isViewerVisible = false
+    private var primaryTranslationID: UUID?
+    private var secondaryTranslationID: UUID?
+    private var unsavedTranslationIDs: Set<UUID> = []
+
+    var hasUnsavedTranslation: Bool { !unsavedTranslationIDs.isEmpty }
+
+    func isTabUnsaved(_ side: ViewerSide) -> Bool {
+        let id = side == .primary ? primaryTranslationID : secondaryTranslationID
+        return id.map { unsavedTranslationIDs.contains($0) } ?? false
+    }
+
+    func translationID(for side: ViewerSide) -> UUID? {
+        side == .primary ? primaryTranslationID : secondaryTranslationID
+    }
+
+    func setUnsavedTranslationForTesting(id: UUID, side: ViewerSide) {
+        if side == .primary { primaryTranslationID = id } else { secondaryTranslationID = id }
+        unsavedTranslationIDs.insert(id)
+    }
+
+    func setTranslationArtifact(id: UUID, side: ViewerSide, isDirty: Bool) {
+        if side == .primary { primaryTranslationID = id } else { secondaryTranslationID = id }
+        if isDirty { unsavedTranslationIDs.insert(id) } else { unsavedTranslationIDs.remove(id) }
+    }
+
+    func markTranslationSaved(id: UUID) { unsavedTranslationIDs.remove(id) }
 
     // MARK: - 单 PDF 控制条状态(预览模式 + 缩放)
 
@@ -113,7 +139,7 @@ final class ViewerSession: ObservableObject {
         ) ? pageGroupMap : nil
     }
 
-    static func pageGroupMapIsCompatible(
+    nonisolated static func pageGroupMapIsCompatible(
         _ map: PageGroupMap,
         sourcePageCount: Int,
         outputPageCount: Int,
@@ -533,7 +559,9 @@ final class ViewerSession: ObservableObject {
     func closeTab(_ side: ViewerSide) {
         switch side {
         case .secondary:
+            if let id = secondaryTranslationID { unsavedTranslationIDs.remove(id) }
             secondary = nil
+            secondaryTranslationID = nil
             secondaryZoom = SideZoomState()
             secondaryPage = SidePageState()
             pageLinkOffset = 0
@@ -546,6 +574,12 @@ final class ViewerSession: ObservableObject {
             // 与"关最后一个标签"分支的目标状态一致,同时让页状态可以脱离真实 PDF 单独测试。
             primaryPage = secondaryPage
             secondaryPage = SidePageState()
+            // Keep the translation identity aligned with the same promotion rule as
+            // page state. This also makes the session model testable before a PDF is loaded.
+            let removedID = primaryTranslationID
+            primaryTranslationID = secondaryTranslationID
+            secondaryTranslationID = nil
+            if primaryTranslationID == nil, let removedID { unsavedTranslationIDs.remove(removedID) }
             pageLinkOffset = 0
             pageGroupMap = nil
             primarySourceFingerprint = nil
@@ -594,6 +628,8 @@ final class ViewerSession: ObservableObject {
     func replacePair(source: URL, output: URL) {
         primary = nil
         secondary = nil
+        primaryTranslationID = nil
+        secondaryTranslationID = nil
         layout = .single(.primary)
         resetRatios()
         primaryPage = SidePageState()

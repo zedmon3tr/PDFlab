@@ -96,6 +96,7 @@ final class AppState: ObservableObject {
     }
 
     let history = HistoryStore()
+    let translationResult = TranslationResultController()
 
     /// 历史变更计数:清空/外部改动后自增,供主界面观察并重载缓存列表
     /// (设置面板是独立窗口,清空后主窗口不会重新触发 .onAppear)。
@@ -114,6 +115,7 @@ final class AppState: ObservableObject {
     @Published var translateSheetActive = false
 
     init() {
+        TranslationTempStore.sweep()
         migrateLegacyLLM()
         normalizeProviderSettings()
         normalizeEngineSelection()
