@@ -29,6 +29,10 @@ struct SettingsView: View {
     @State private var rollingBackDeepSeekSecret = false
     @State private var pendingCloudEngineID: String?
 
+    /// 手动检测发现新版时弹的富更新窗口(sheet-on-sheet,挂在设置 sheet 上,
+    /// 避免与设置 sheet 同层争抢;与启动弹窗共用 UpdateSheetView)。
+    @State private var settingsUpdateInfo: UpdateInfo?
+
     var body: some View {
         VStack(spacing: 0) {
             Picker("", selection: $app.settingsTab) {
@@ -98,6 +102,22 @@ struct SettingsView: View {
         } message: {
             Text(L10n.t("privacy.cloudNotice"))
         }
+        .sheet(isPresented: settingsUpdateSheetPresented) {
+            if let info = settingsUpdateInfo {
+                UpdateSheetView(
+                    updater: updater,
+                    info: info,
+                    dismiss: { settingsUpdateInfo = nil }
+                )
+            }
+        }
+    }
+
+    private var settingsUpdateSheetPresented: Binding<Bool> {
+        Binding(
+            get: { settingsUpdateInfo != nil },
+            set: { if !$0 { settingsUpdateInfo = nil } }
+        )
     }
 
     // MARK: - Tab 页
@@ -211,7 +231,13 @@ struct SettingsView: View {
 
     private var checkUpdateButton: some View {
         Button {
-            Task { await updater.checkManually() }
+            Task {
+                await updater.checkManually()
+                // 手动检测发现新版(无视 skippedVersion,现状)→ 弹同一富更新窗口。
+                if case .updateAvailable(let info) = updater.phase {
+                    settingsUpdateInfo = info
+                }
+            }
         } label: {
             if updater.phase == .checking {
                 HStack(spacing: 6) {
@@ -225,27 +251,14 @@ struct SettingsView: View {
         .disabled(updater.phase == .checking)
     }
 
+    /// 关于页发现新版的内联展示:精简为一行版本 + 「查看更新」,
+    /// Release Notes / 下载 / 跳过统一收进富更新窗口,不做两份重复 UI。
     private func updateAvailableView(_ info: UpdateInfo) -> some View {
         VStack(spacing: 8) {
             Text("\(L10n.t("update.available")) \(info.version)")
                 .font(.callout.weight(.semibold))
-            if !info.releaseNotes.isEmpty {
-                ScrollView {
-                    Text(info.releaseNotes)
-                        .font(.callout)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxHeight: 120)
-                .padding(8)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
-                .padding(.horizontal, 32)
-            }
-            HStack {
-                Button(L10n.t("update.download")) { updater.download(info) }
-                    .buttonStyle(.borderedProminent)
-                Button(L10n.t("update.skip")) { updater.skip(info) }
-            }
+            Button(L10n.t("update.details")) { settingsUpdateInfo = info }
+                .buttonStyle(.borderedProminent)
         }
     }
 

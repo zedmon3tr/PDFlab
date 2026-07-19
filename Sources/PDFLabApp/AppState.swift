@@ -114,6 +114,11 @@ final class AppState: ObservableObject {
     /// `settingsPresented` 卡在 true(之后齿轮按钮点了没反应)。
     @Published var translateSheetActive = false
 
+    /// 启动更新 sheet 是否正占用主窗口 sheet 位(由 MainView 同步)。
+    /// 打开期间 ⌘,/齿轮忽略,避免同层 sheet 争抢;反向:设置/翻译 sheet
+    /// 已打开时启动检测不弹更新 sheet(静默,phase 仍供关于页显示)。
+    @Published var updateSheetActive = false
+
     init() {
         TranslationTempStore.sweep()
         migrateLegacyLLM()
@@ -150,8 +155,18 @@ final class AppState: ObservableObject {
     }
 
     /// 打开设置 sheet 的守卫判定(纯函数,便于测试):
-    /// 只有主窗口没有其他 sheet 且设置未打开时才呈现。
-    nonisolated static func shouldPresentSettings(translateSheetActive: Bool, settingsPresented: Bool) -> Bool {
+    /// 只有主窗口没有其他 sheet(翻译面板 / 更新窗口)且设置未打开时才呈现。
+    nonisolated static func shouldPresentSettings(
+        translateSheetActive: Bool, settingsPresented: Bool, updateSheetActive: Bool
+    ) -> Bool {
+        !translateSheetActive && !settingsPresented && !updateSheetActive
+    }
+
+    /// 启动更新 sheet 的守卫判定(纯函数,便于测试):
+    /// 设置 sheet 或翻译面板已占用主窗口 sheet 位时不弹(静默,phase 供关于页显示)。
+    nonisolated static func shouldPresentUpdateSheet(
+        translateSheetActive: Bool, settingsPresented: Bool
+    ) -> Bool {
         !translateSheetActive && !settingsPresented
     }
 
@@ -159,7 +174,8 @@ final class AppState: ObservableObject {
     func presentSettingsIfIdle() {
         guard Self.shouldPresentSettings(
             translateSheetActive: translateSheetActive,
-            settingsPresented: settingsPresented
+            settingsPresented: settingsPresented,
+            updateSheetActive: updateSheetActive
         ) else { return }
         settingsPresented = true
     }

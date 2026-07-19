@@ -24,8 +24,24 @@ final class UpdateController: ObservableObject {
 
     @Published private(set) var phase: Phase = .idle
 
+    /// 新装默认开启启动检测(0.1.5 起);老用户已持久化的选择由 @AppStorage 语义天然保留。
+    nonisolated static let autoCheckUpdatesDefault = true
+
+    /// 默认值语义的可测表达:有持久化值用持久化值,否则用默认值(即 @AppStorage 的行为)。
+    nonisolated static func resolvedAutoCheckUpdates(persisted: Bool?) -> Bool {
+        persisted ?? autoCheckUpdatesDefault
+    }
+
+    /// 启动是否弹更新窗口的纯函数决策:auto 关闭、无新版或该版本已被跳过都不弹。
+    nonisolated static func shouldOfferLaunchUpdate(
+        autoCheckEnabled: Bool, candidateVersion: String?, skippedVersion: String
+    ) -> Bool {
+        guard autoCheckEnabled, let candidate = candidateVersion else { return false }
+        return candidate != skippedVersion
+    }
+
     // @AppStorage 在 ObservableObject 内不自动触发刷新,willSet 手动补发(与 AppState 同范式)。
-    @AppStorage("autoCheckUpdates") var autoCheckUpdates: Bool = false {
+    @AppStorage("autoCheckUpdates") var autoCheckUpdates: Bool = UpdateController.autoCheckUpdatesDefault {
         willSet { objectWillChange.send() }
     }
     @AppStorage("skippedVersion") var skippedVersion: String = ""
@@ -49,11 +65,17 @@ final class UpdateController: ObservableObject {
     }
 
     /// 启动静默检测:未勾选 / 失败 / 版本已被跳过一律返回 nil 且不置失败态。
+    /// 弹窗与否的判定收敛在 `shouldOfferLaunchUpdate`(纯函数,可测)。
     func checkAtLaunch() async -> UpdateInfo? {
-        guard autoCheckUpdates else { return nil }
+        guard autoCheckUpdates else { return nil }   // auto 关闭时连网络请求都不发
         // 注意:`try?` 会把 `UpdateInfo??` 拍平成单层 Optional,一次解包即可。
-        guard let info = try? await checker.check(currentVersion: PDFLabCoreInfo.version),
-              info.version != skippedVersion else { return nil }
+        let candidate = try? await checker.check(currentVersion: PDFLabCoreInfo.version)
+        guard let info = candidate,
+              Self.shouldOfferLaunchUpdate(
+                  autoCheckEnabled: autoCheckUpdates,
+                  candidateVersion: info.version,
+                  skippedVersion: skippedVersion
+              ) else { return nil }
         phase = .updateAvailable(info)   // 关于页同步显示
         return info
     }

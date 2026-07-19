@@ -34,7 +34,9 @@ struct MainView: View {
             // 不显示默认窗口标题("PDFLabApp" 字样)。
             .navigationTitle("")
             .toolbar { toolbarContent }
-            .background(MainWindowResizeControl(isResizeEnabled: translateDialog == nil && !app.settingsPresented))
+            .background(MainWindowResizeControl(
+                isResizeEnabled: translateDialog == nil && !app.settingsPresented && launchUpdate == nil
+            ))
             .onAppear {
                 reloadHistory()
                 // 需求 3.1:历史只记录查看模块打开的主文件(会话只对 primary 回调)。
@@ -137,25 +139,25 @@ struct MainView: View {
                 Text(missingEntry?.fileName ?? "")
             }
             .task {
-                launchUpdate = await UpdateController.shared.checkAtLaunch()
+                guard let info = await UpdateController.shared.checkAtLaunch() else { return }
+                // 设置/翻译 sheet 已占用主窗口 sheet 位时静默不弹,
+                // phase 已置 updateAvailable,关于页仍可见。
+                guard AppState.shouldPresentUpdateSheet(
+                    translateSheetActive: app.translateSheetActive,
+                    settingsPresented: app.settingsPresented
+                ) else { return }
+                launchUpdate = info
             }
-            .alert(
-                L10n.t("update.alert.title"),
-                isPresented: Binding(
-                    get: { launchUpdate != nil },
-                    set: { if !$0 { launchUpdate = nil } }
-                )
-            ) {
-                Button(L10n.t("update.alert.view")) {
-                    app.settingsTab = "about"
-                    app.presentSettingsIfIdle()
-                    launchUpdate = nil
+            // 更新 sheet 占位期间 ⌘,/齿轮打开设置的请求被守卫忽略(与翻译面板同范式)。
+            .onChange(of: launchUpdate) { app.updateSheetActive = launchUpdate != nil }
+            .sheet(isPresented: launchUpdatePresented) {
+                if let info = launchUpdate {
+                    UpdateSheetView(
+                        updater: UpdateController.shared,
+                        info: info,
+                        dismiss: { launchUpdate = nil }   // 稍后提醒 = 关窗,本次会话不再弹
+                    )
                 }
-                Button(L10n.t("update.alert.close"), role: .cancel) {
-                    launchUpdate = nil
-                }
-            } message: {
-                Text("\(L10n.t("update.available")) \(launchUpdate?.version ?? "")")
             }
     }
 
@@ -274,6 +276,13 @@ struct MainView: View {
         .buttonStyle(HoverButtonStyle(variant: .toolbar))
         .disabled(session.isDefaultRatio)
         .help(L10n.t("viewer.resetRatio"))
+    }
+
+    private var launchUpdatePresented: Binding<Bool> {
+        Binding(
+            get: { launchUpdate != nil },
+            set: { if !$0 { launchUpdate = nil } }
+        )
     }
 
     private var passwordAlertPresented: Binding<Bool> {

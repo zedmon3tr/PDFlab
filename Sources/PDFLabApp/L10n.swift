@@ -270,9 +270,12 @@ enum L10n {
         "update.downloading": ("正在下载更新…", "Downloading update…"),
         "update.downloaded": ("安装包已打开,请将 PDFlab 拖入 Applications 完成更新",
                               "Installer opened — drag PDFlab into Applications to finish updating"),
-        "update.alert.title": ("发现新版本", "New Version Available"),
-        "update.alert.view": ("前往查看", "View Details"),
-        "update.alert.close": ("关闭", "Close"),
+        // 0.1.5 富更新窗口(Sparkle 风格 sheet)
+        "update.sheet.title": ("PDFlab %@ 可用", "PDFlab %@ Is Available"),
+        "update.sheet.versions": ("当前版本 %@,新版本 %@", "You're on version %@ — the new version is %@"),
+        "update.later": ("稍后提醒", "Remind Me Later"),
+        "update.retry": ("重试下载", "Retry Download"),
+        "update.details": ("查看更新", "View Update"),
 
         // 隐私提示
         "privacy.cloudNotice": (
