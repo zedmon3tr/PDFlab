@@ -207,7 +207,13 @@ struct SettingsView: View {
                     ProgressView(L10n.t("update.downloading"))
                         .controlSize(.small)
                 }
+                // 进度必须保留可见明确的取消(DESIGN.md);取消回 updateAvailable,不报错。
+                Button(L10n.t("update.cancelDownload")) { updater.cancelDownload() }
+                    .controlSize(.small)
             case .downloaded:
+                // 保留检测入口:用户误关安装包后仍能再次检测 → 弹富窗口重新下载,
+                // 避免 phase 停在 downloaded 导致整个会话内更新链路死锁。
+                checkUpdateButton
                 Text(L10n.t("update.downloaded"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -252,13 +258,17 @@ struct SettingsView: View {
     }
 
     /// 关于页发现新版的内联展示:精简为一行版本 + 「查看更新」,
-    /// Release Notes / 下载 / 跳过统一收进富更新窗口,不做两份重复 UI。
+    /// Release Notes / 下载 / 跳过统一收进富更新窗口,不做两份重复 UI;
+    /// 同时保留检测入口,用户可随时重新检测(如新版刚发布或跳过后想再确认)。
     private func updateAvailableView(_ info: UpdateInfo) -> some View {
         VStack(spacing: 8) {
             Text("\(L10n.t("update.available")) \(info.version)")
                 .font(.callout.weight(.semibold))
-            Button(L10n.t("update.details")) { settingsUpdateInfo = info }
-                .buttonStyle(.borderedProminent)
+            HStack(spacing: 8) {
+                checkUpdateButton
+                Button(L10n.t("update.details")) { settingsUpdateInfo = info }
+                    .buttonStyle(.borderedProminent)
+            }
         }
     }
 

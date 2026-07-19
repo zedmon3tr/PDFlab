@@ -85,10 +85,32 @@ final class UpdateController: ObservableObject {
         phase = .idle
     }
 
+    /// 进行中下载的句柄与其对应的更新信息(取消时回退 phase 用)。
+    private var downloadTask: Task<Void, Never>?
+    private var activeDownloadInfo: UpdateInfo?
+
+    /// 取消后 phase 的回退目标(纯函数,便于测试):
+    /// 仅下载中可取消;回退到 .updateAvailable(不是 .failed,不弹错误),
+    /// 无活动信息时兜底 .idle;其他态返回 nil = 不动。
+    nonisolated static func phaseAfterCancel(current: Phase, activeInfo: UpdateInfo?) -> Phase? {
+        guard case .downloading = current else { return nil }
+        guard let info = activeInfo else { return .idle }
+        return .updateAvailable(info)
+    }
+
+    /// 取消类错误分类:Task 取消与 URLSession 取消都不算失败,不落 .failed 分支。
+    nonisolated static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        return false
+    }
+
     /// 下载 dmg 到 ~/Downloads 并自动打开(半自动安装:用户拖入 Applications 覆盖)。
+    /// 全程可取消(`cancelDownload()`);取消时已收数据直接随 Task 丢弃。
     func download(_ info: UpdateInfo) {
         phase = .downloading(nil)
-        Task.detached { [weak self] in
+        activeDownloadInfo = info
+        downloadTask = Task.detached { [weak self] in
             do {
                 let (bytes, response) = try await URLSession.shared.bytes(from: info.assetURL)
                 guard let http = response as? HTTPURLResponse,
@@ -104,10 +126,11 @@ final class UpdateController: ObservableObject {
                     data.append(byte)
                     if expected > 0, data.count >= nextReport {
                         let fraction = Double(data.count) / Double(expected)
-                        await self?.setPhase(.downloading(fraction))
+                        await self?.reportDownloadProgress(fraction)
                         nextReport = data.count + reportStep
                     }
                 }
+                try Task.checkCancellation()   // 取消后不落盘、不打开安装包
                 let downloads = FileManager.default.urls(for: .downloadsDirectory,
                                                          in: .userDomainMask)[0]
                 let dest = downloads.appendingPathComponent(info.assetName)
@@ -118,13 +141,30 @@ final class UpdateController: ObservableObject {
                 }
                 await self?.setPhase(.downloaded(info))
             } catch {
+                // 取消:phase 由 cancelDownload 统一回退,这里绝不置 failed。
+                guard !Self.isCancellation(error) else { return }
                 await self?.setPhase(.failed(Self.message(for: error)))
             }
         }
     }
 
+    /// 取消进行中的下载:phase 回 .updateAvailable(可重新下载),不报错、不残留半成品
+    /// (数据只在内存,随 Task 丢弃;尚未写入 ~/Downloads)。
+    func cancelDownload() {
+        guard let reverted = Self.phaseAfterCancel(current: phase, activeInfo: activeDownloadInfo) else { return }
+        downloadTask?.cancel()
+        downloadTask = nil
+        phase = reverted
+    }
+
     private func setPhase(_ new: Phase) {
         phase = new
+    }
+
+    /// 迟到的进度回报不得覆盖取消/完成后的状态:仅下载中才更新进度。
+    private func reportDownloadProgress(_ fraction: Double?) {
+        guard case .downloading = phase else { return }
+        phase = .downloading(fraction)
     }
 
     /// 更新专属错误文案:引擎不可用错误若来自更新检查(engineID == "update")用专属措辞,

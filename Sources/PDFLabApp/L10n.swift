@@ -275,6 +275,8 @@ enum L10n {
         "update.sheet.versions": ("当前版本 %@,新版本 %@", "You're on version %@ — the new version is %@"),
         "update.later": ("稍后提醒", "Remind Me Later"),
         "update.retry": ("重试下载", "Retry Download"),
+        "update.redownload": ("重新下载", "Download Again"),
+        "update.cancelDownload": ("取消下载", "Cancel Download"),
         "update.details": ("查看更新", "View Update"),
 
         // 隐私提示

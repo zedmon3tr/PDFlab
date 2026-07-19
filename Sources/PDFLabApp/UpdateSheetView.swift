@@ -16,6 +16,36 @@ enum UpdateSheetPresentation {
         String(format: L10n.t("update.sheet.versions"), current, new)
     }
 
+    /// 按钮行可用性(按 phase 收敛的纯函数,便于测试)。
+    /// - 下载中:稍后/Esc 仍可关窗(下载后台继续),跳过位换成「取消下载」;
+    /// - downloaded:保留「重新下载」次要出口,用户误关安装包后本会话不死锁;
+    /// - 跳过在下载中与完成后维持禁用。
+    struct ButtonState: Equatable {
+        var skipEnabled: Bool
+        var laterEnabled: Bool
+        var showsDone: Bool
+        var showsRedownload: Bool
+        var showsCancelDownload: Bool
+        var downloadEnabled: Bool
+    }
+
+    static func buttonState(for phase: UpdateController.Phase) -> ButtonState {
+        switch phase {
+        case .downloading:
+            return ButtonState(skipEnabled: false, laterEnabled: true,
+                               showsDone: false, showsRedownload: false,
+                               showsCancelDownload: true, downloadEnabled: false)
+        case .downloaded:
+            return ButtonState(skipEnabled: false, laterEnabled: false,
+                               showsDone: true, showsRedownload: true,
+                               showsCancelDownload: false, downloadEnabled: false)
+        default:
+            return ButtonState(skipEnabled: true, laterEnabled: true,
+                               showsDone: false, showsRedownload: false,
+                               showsCancelDownload: false, downloadEnabled: true)
+        }
+    }
+
     /// GitHub Release body → 可显示的富文本:
     /// 空 body 返回 nil(整个区域隐藏);markdown 解析失败降级为纯文本,不报错。
     static func notes(from body: String) -> AttributedString? {
@@ -140,17 +170,8 @@ struct UpdateSheetView: View {
         }
     }
 
-    // MARK: - 按钮行(下载更新为唯一 prominent)
-
-    private var isDownloading: Bool {
-        if case .downloading = updater.phase { return true }
-        return false
-    }
-
-    private var isDownloaded: Bool {
-        if case .downloaded = updater.phase { return true }
-        return false
-    }
+    // MARK: - 按钮行(可用性由 UpdateSheetPresentation.buttonState 单点决定;
+    // 每态仍只有一个 prominent 主按钮)
 
     private var isFailed: Bool {
         if case .failed = updater.phase { return true }
@@ -158,29 +179,39 @@ struct UpdateSheetView: View {
     }
 
     private var buttons: some View {
-        HStack(spacing: 8) {
-            Button(L10n.t("update.skip")) {
-                updater.skip(info)
-                dismiss()
+        let state = UpdateSheetPresentation.buttonState(for: updater.phase)
+        return HStack(spacing: 8) {
+            if state.showsCancelDownload {
+                // 下载中:跳过位换成明确的取消出口(取消回 updateAvailable,不报错)。
+                Button(L10n.t("update.cancelDownload")) { updater.cancelDownload() }
+            } else {
+                Button(L10n.t("update.skip")) {
+                    updater.skip(info)
+                    dismiss()
+                }
+                .disabled(!state.skipEnabled)
             }
-            .disabled(isDownloading || isDownloaded)
 
             Spacer()
 
-            if isDownloaded {
+            if state.showsDone {
+                // 误关安装包的恢复出口:重新下载(次要),完成保持 prominent。
+                if state.showsRedownload {
+                    Button(L10n.t("update.redownload")) { updater.download(info) }
+                }
                 Button(L10n.t("common.done")) { dismiss() }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
             } else {
                 Button(L10n.t("update.later")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                    .disabled(isDownloading)
+                    .disabled(!state.laterEnabled)
                 Button(L10n.t(isFailed ? "update.retry" : "update.download")) {
                     updater.download(info)
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(isDownloading)
+                .disabled(!state.downloadEnabled)
             }
         }
     }
