@@ -41,6 +41,13 @@ struct SidePageState: Equatable {
     var command: ViewerPageCommand?
 }
 
+struct MappedPageProgress: Equatable {
+    let sourcePage: Int
+    let sourcePageCount: Int
+    let translatedPart: Int
+    let translatedPartCount: Int
+}
+
 /// 常驻查看会话(浏览器 tab 语义):文档标签与对照布局状态与查看器视图解耦。
 /// 返回首页不销毁——标签继续显示在标题栏,点标签回到查看器时滚动/缩放原样保留;
 /// 关掉全部标签才回到纯首页。
@@ -85,6 +92,52 @@ final class ViewerSession: ObservableObject {
     @Published private(set) var secondaryPage = SidePageState()
     /// 微调锚点偏移:secondaryIndex − primaryIndex(0 计)。仅双 PDF 逐页对照使用。
     @Published private(set) var pageLinkOffset = 0
+    /// 译文 PDF XMP 中的页组映射；页数与当前左右文档都匹配时才启用。
+    @Published private(set) var pageGroupMap: PageGroupMap?
+    private var primarySourceFingerprint: String?
+
+    private var activePageGroupMap: PageGroupMap? {
+        guard let pageGroupMap else { return nil }
+        #if DEBUG
+        if testingForcesComparison,
+           pageGroupMap.sourcePageCount == primaryPage.pageCount,
+           pageGroupMap.outputPageCount == secondaryPage.pageCount {
+            return pageGroupMap
+        }
+        #endif
+        return Self.pageGroupMapIsCompatible(
+            pageGroupMap,
+            sourcePageCount: primaryPage.pageCount,
+            outputPageCount: secondaryPage.pageCount,
+            sourceFingerprint: primarySourceFingerprint
+        ) ? pageGroupMap : nil
+    }
+
+    static func pageGroupMapIsCompatible(
+        _ map: PageGroupMap,
+        sourcePageCount: Int,
+        outputPageCount: Int,
+        sourceFingerprint: String?
+    ) -> Bool {
+        guard let sourceFingerprint else { return false }
+        return map.sourcePageCount == sourcePageCount
+            && map.outputPageCount == outputPageCount
+            && map.sourceFingerprint == sourceFingerprint
+    }
+
+    var hasActivePageGroupMap: Bool { activePageGroupMap != nil }
+
+    var mappedPageProgress: MappedPageProgress? {
+        guard let map = activePageGroupMap,
+              let group = map.group(containingOutputPage: secondaryPage.pageIndex)
+        else { return nil }
+        return MappedPageProgress(
+            sourcePage: group.sourcePageIndex + 1,
+            sourcePageCount: map.sourcePageCount,
+            translatedPart: secondaryPage.pageIndex - group.outputStartPageIndex + 1,
+            translatedPartCount: group.outputPageCount
+        )
+    }
 
     #if DEBUG
     /// 仅测试:`layoutForTesting(.sideBySide)` 时置 true,让 `isPagedComparisonActive`
@@ -134,6 +187,10 @@ final class ViewerSession: ObservableObject {
     /// 翻页(按钮/方向键共用):单看只动聚焦侧;逐页对照两侧按锚点偏移联动。
     func stepPage(by delta: Int) {
         if isPagedComparisonActive {
+            if let map = activePageGroupMap {
+                stepMappedPages(by: delta, map: map)
+                return
+            }
             let next = ViewerPageNavigation.steppedIndex(
                 from: primaryPage.pageIndex, by: delta, pageCount: primaryPage.pageCount)
             issuePageCommand(next, on: .primary)
@@ -146,6 +203,26 @@ final class ViewerSession: ObservableObject {
             issuePageCommand(
                 ViewerPageNavigation.steppedIndex(from: state.pageIndex, by: delta, pageCount: state.pageCount),
                 on: side)
+        }
+    }
+
+    private func stepMappedPages(by delta: Int, map: PageGroupMap) {
+        guard delta != 0 else { return }
+        for _ in 0..<abs(delta) {
+            guard let group = map.group(containingOutputPage: secondaryPage.pageIndex) else { return }
+            if delta > 0 {
+                if secondaryPage.pageIndex < group.outputPageRange.upperBound {
+                    issuePageCommand(secondaryPage.pageIndex + 1, on: .secondary)
+                } else if let next = map.group(forSourcePage: group.sourcePageIndex + 1) {
+                    issuePageCommand(next.sourcePageIndex, on: .primary)
+                    issuePageCommand(next.outputStartPageIndex, on: .secondary)
+                }
+            } else if secondaryPage.pageIndex > group.outputPageRange.lowerBound {
+                issuePageCommand(secondaryPage.pageIndex - 1, on: .secondary)
+            } else if let previous = map.group(forSourcePage: group.sourcePageIndex - 1) {
+                issuePageCommand(previous.sourcePageIndex, on: .primary)
+                issuePageCommand(previous.outputPageRange.upperBound, on: .secondary)
+            }
         }
     }
 
@@ -163,11 +240,17 @@ final class ViewerSession: ObservableObject {
 
     /// pageCount 为 0(尚无页信息)时视为不可翻,两个方向都禁用。
     var canStepPageBackward: Bool {
+        if isPagedComparisonActive, activePageGroupMap != nil {
+            return secondaryPage.pageCount > 0 && secondaryPage.pageIndex > 0
+        }
         guard let state = relevantPageStateForStepping, state.pageCount > 0 else { return false }
         return state.pageIndex > 0
     }
 
     var canStepPageForward: Bool {
+        if isPagedComparisonActive, activePageGroupMap != nil {
+            return secondaryPage.pageCount > 0 && secondaryPage.pageIndex < secondaryPage.pageCount - 1
+        }
         guard let state = relevantPageStateForStepping, state.pageCount > 0 else { return false }
         return state.pageIndex < state.pageCount - 1
     }
@@ -176,6 +259,7 @@ final class ViewerSession: ObservableObject {
     /// 只记录 secondaryIndex − primaryIndex 的关系,不强制两侧跳转——用户已经手动对齐到
     /// 这两页才会点“建立锚点”,不应该反过来打断当前查看位置。
     func applyPageAnchor(primaryText: String, secondaryText: String) -> Bool {
+        guard activePageGroupMap == nil else { return false }
         guard let primaryIndex = ViewerPageNavigation.pageIndex(fromDisplayText: primaryText, pageCount: primaryPage.pageCount),
               let secondaryIndex = ViewerPageNavigation.pageIndex(fromDisplayText: secondaryText, pageCount: secondaryPage.pageCount)
         else { return false }
@@ -183,8 +267,8 @@ final class ViewerSession: ObservableObject {
         return true
     }
 
-    /// PDFView 页回显(命令施加以外的任何来源)。主侧变化时在逐页对照下驱动副侧跟随
-    /// (单向:副侧命令不会再产生主侧回显,不成环);副侧回显只更新显示。
+    /// PDFView 页回显(命令施加以外的任何来源)。固定偏移模式由主侧单向驱动副侧；
+    /// 页组模式还会在副侧跨组时反查所属原文页，组内续页则保持左侧不动。
     /// 命令存在时把 pageIndex 原位同步进去(不前进 revision)——活跃视图因 revision
     /// 相同不会重放,但该侧 PDFView 拆掉重建(切标签回来)时能重放出观察到的真实页码,
     /// 而不是命令签发时的旧页(PDF 内链点击、PDFKit 原生 Space/PageUp/PageDown 等非命令
@@ -197,7 +281,21 @@ final class ViewerSession: ObservableObject {
                 state.command?.pageIndex = state.pageIndex
             }
         }
-        if side == .primary, isPagedComparisonActive {
+        guard isPagedComparisonActive else { return }
+        if let map = activePageGroupMap {
+            switch side {
+            case .primary:
+                guard let group = map.group(forSourcePage: primaryPage.pageIndex),
+                      !group.outputPageRange.contains(secondaryPage.pageIndex)
+                else { return }
+                issuePageCommand(group.outputStartPageIndex, on: .secondary)
+            case .secondary:
+                guard let group = map.group(containingOutputPage: secondaryPage.pageIndex),
+                      primaryPage.pageIndex != group.sourcePageIndex
+                else { return }
+                issuePageCommand(group.sourcePageIndex, on: .primary)
+            }
+        } else if side == .primary {
             issuePageCommand(
                 ViewerPageNavigation.linkedIndex(
                     sourceIndex: primaryPage.pageIndex, offset: pageLinkOffset, targetPageCount: secondaryPage.pageCount),
@@ -208,6 +306,13 @@ final class ViewerSession: ObservableObject {
     /// 进入逐页对照(切模式/进并排)时把副侧对齐到 主侧 + 偏移。
     func realignLinkedPages() {
         guard isPagedComparisonActive else { return }
+        if let map = activePageGroupMap,
+           let group = map.group(forSourcePage: primaryPage.pageIndex),
+           !group.outputPageRange.contains(secondaryPage.pageIndex) {
+            issuePageCommand(group.outputStartPageIndex, on: .secondary)
+            return
+        }
+        if activePageGroupMap != nil { return }
         issuePageCommand(
             ViewerPageNavigation.linkedIndex(
                 sourceIndex: primaryPage.pageIndex, offset: pageLinkOffset, targetPageCount: secondaryPage.pageCount),
@@ -218,6 +323,10 @@ final class ViewerSession: ObservableObject {
     /// 仅测试:注入页数,免加载真实 PDF。
     func setPageCountForTesting(_ count: Int, on side: ViewerSide) {
         modifyPageState(on: side) { $0.pageCount = count }
+    }
+
+    func setPageGroupMapForTesting(_ map: PageGroupMap?) {
+        pageGroupMap = map
     }
 
     /// 仅测试:注入布局(含 sideBySide),配合 `testingForcesComparison` 让逐页对照联动
@@ -428,6 +537,7 @@ final class ViewerSession: ObservableObject {
             secondaryZoom = SideZoomState()
             secondaryPage = SidePageState()
             pageLinkOffset = 0
+            pageGroupMap = nil
             layout = .single(.primary)
             resetRatios()
         case .primary:
@@ -437,6 +547,8 @@ final class ViewerSession: ObservableObject {
             primaryPage = secondaryPage
             secondaryPage = SidePageState()
             pageLinkOffset = 0
+            pageGroupMap = nil
+            primarySourceFingerprint = nil
             if let promoted = secondary {
                 primary = promoted
                 secondary = nil
@@ -487,6 +599,8 @@ final class ViewerSession: ObservableObject {
         primaryPage = SidePageState()
         secondaryPage = SidePageState()
         pageLinkOffset = 0
+        pageGroupMap = nil
+        primarySourceFingerprint = nil
         load(source, side: .primary)
         load(output, side: .secondary)
         if primary != nil && secondary != nil {
@@ -534,7 +648,15 @@ final class ViewerSession: ObservableObject {
         case .pdf:
             do {
                 let document = try PDFTextExtractor.openDocument(at: url, password: password)
-                assign(ViewerDocument(url: url, kind: .pdf, password: password), side: side, pageCount: document.pageCount)
+                assign(
+                    ViewerDocument(url: url, kind: .pdf, password: password),
+                    side: side,
+                    pageCount: document.pageCount,
+                    pageGroupMap: PDFPageGroupMetadata.read(from: document),
+                    sourceFingerprint: side == .primary
+                        ? PDFPageGroupMetadata.sourceFingerprint(for: url)
+                        : nil
+                )
                 passwordFailure = nil
                 recordOpen(url, side: side)
             } catch PDFLabError.encryptedPDFWrongPassword {
@@ -560,7 +682,13 @@ final class ViewerSession: ObservableObject {
         onRecordOpen?(url)
     }
 
-    private func assign(_ document: ViewerDocument, side: ViewerSide, pageCount: Int = 0) {
+    private func assign(
+        _ document: ViewerDocument,
+        side: ViewerSide,
+        pageCount: Int = 0,
+        pageGroupMap: PageGroupMap? = nil,
+        sourceFingerprint: String? = nil
+    ) {
         switch side {
         case .primary:
             primary = document
@@ -577,9 +705,13 @@ final class ViewerSession: ObservableObject {
         switch side {
         case .primary:
             primaryPage = SidePageState(pageCount: pageCount)
+            // 映射属于右侧译文；更换左侧后，旧配对关系不再可信。
+            self.pageGroupMap = nil
+            primarySourceFingerprint = sourceFingerprint
         case .secondary:
             secondaryPage = SidePageState(pageCount: pageCount)
             pageLinkOffset = 0
+            self.pageGroupMap = pageGroupMap
         }
         // 任何成功装入的文档都把查看器前置(含密码解锁后)。
         isViewerVisible = true

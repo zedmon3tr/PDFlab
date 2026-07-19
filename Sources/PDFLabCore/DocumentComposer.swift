@@ -58,7 +58,9 @@ public enum DocumentComposer {
             }
         }
 
-        if options.pageMode == .pageAligned, doc.pageCount > 0, (lastPageIndex ?? 0) < doc.pageCount - 1 {
+        if options.pageMode == .pageAligned,
+           doc.pageCount > 0,
+           (lastPageIndex ?? -1) < doc.pageCount - 1 {
             blocks.append(.pageBreak(pageIndex: doc.pageCount - 1))
         }
         return ComposedDocument(blocks: blocks, direction: direction)

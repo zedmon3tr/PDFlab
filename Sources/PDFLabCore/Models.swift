@@ -273,6 +273,121 @@ public struct ComposedDocument: Equatable, Sendable {
     }
 }
 
+/// 按页导出时，一个逻辑原文页实际占用的连续译文 PDF 页组（均为 0 计）。
+public struct PageGroup: Codable, Equatable, Sendable {
+    public let sourcePageIndex: Int
+    public let outputStartPageIndex: Int
+    public let outputPageCount: Int
+
+    public init(sourcePageIndex: Int, outputStartPageIndex: Int, outputPageCount: Int) {
+        self.sourcePageIndex = sourcePageIndex
+        self.outputStartPageIndex = outputStartPageIndex
+        self.outputPageCount = outputPageCount
+    }
+
+    public var outputPageRange: ClosedRange<Int> {
+        outputStartPageIndex...(outputStartPageIndex + max(outputPageCount, 1) - 1)
+    }
+}
+
+/// 译文 PDF 内嵌的原文页 → 译文物理页映射。
+/// 构造器只接受从第 0 页开始、无缺口且完整覆盖两份文档的映射，损坏元数据不会进入查看器。
+public struct PageGroupMap: Codable, Equatable, Sendable {
+    public static let currentVersion = 1
+
+    public let version: Int
+    public let sourcePageCount: Int
+    public let outputPageCount: Int
+    public let sourceFingerprint: String
+    public let groups: [PageGroup]
+
+    public init?(
+        version: Int = PageGroupMap.currentVersion,
+        sourcePageCount: Int,
+        outputPageCount: Int,
+        sourceFingerprint: String,
+        groups: [PageGroup]
+    ) {
+        guard Self.isValid(
+            version: version,
+            sourcePageCount: sourcePageCount,
+            outputPageCount: outputPageCount,
+            sourceFingerprint: sourceFingerprint,
+            groups: groups
+        ) else { return nil }
+        self.version = version
+        self.sourcePageCount = sourcePageCount
+        self.outputPageCount = outputPageCount
+        self.sourceFingerprint = sourceFingerprint
+        self.groups = groups
+    }
+
+    public func group(forSourcePage index: Int) -> PageGroup? {
+        guard groups.indices.contains(index), groups[index].sourcePageIndex == index else { return nil }
+        return groups[index]
+    }
+
+    public func group(containingOutputPage index: Int) -> PageGroup? {
+        groups.first { $0.outputPageRange.contains(index) }
+    }
+
+    private static func isValid(
+        version: Int,
+        sourcePageCount: Int,
+        outputPageCount: Int,
+        sourceFingerprint: String,
+        groups: [PageGroup]
+    ) -> Bool {
+        guard version == currentVersion,
+              sourcePageCount > 0,
+              outputPageCount > 0,
+              groups.count == sourcePageCount,
+              sourceFingerprintIsValid(sourceFingerprint)
+        else { return false }
+
+        var expectedOutputStart = 0
+        for (expectedSourceIndex, group) in groups.enumerated() {
+            guard group.sourcePageIndex == expectedSourceIndex,
+                  group.outputStartPageIndex == expectedOutputStart,
+                  group.outputPageCount > 0,
+                  group.outputPageCount <= outputPageCount - expectedOutputStart
+            else { return false }
+            expectedOutputStart += group.outputPageCount
+        }
+        return expectedOutputStart == outputPageCount
+    }
+
+    private static func sourceFingerprintIsValid(_ fingerprint: String) -> Bool {
+        return fingerprint.count == 64 && fingerprint.allSatisfy { $0.isHexDigit }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, sourcePageCount, outputPageCount, sourceFingerprint, groups
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try values.decode(Int.self, forKey: .version)
+        let sourcePageCount = try values.decode(Int.self, forKey: .sourcePageCount)
+        let outputPageCount = try values.decode(Int.self, forKey: .outputPageCount)
+        let sourceFingerprint = try values.decode(String.self, forKey: .sourceFingerprint)
+        let groups = try values.decode([PageGroup].self, forKey: .groups)
+        guard let valid = PageGroupMap(
+            version: version,
+            sourcePageCount: sourcePageCount,
+            outputPageCount: outputPageCount,
+            sourceFingerprint: sourceFingerprint,
+            groups: groups
+        ) else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "Invalid PDF page-group mapping"
+            ))
+        }
+        self = valid
+    }
+}
+
 /// 管线进度(任务17产出,UI 消费)。
 public enum PipelineStage: String, Sendable { case parsing, ocr, translating, composing }
 public struct PipelineProgress: Equatable, Sendable {

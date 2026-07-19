@@ -13,6 +13,24 @@ public struct PDFExporter: Exporter {
     public init() {}
 
     public func export(_ doc: ComposedDocument, to url: URL, uiLanguageChinese: Bool) throws {
+        try export(doc, to: url, uiLanguageChinese: uiLanguageChinese, sourceURL: nil)
+    }
+
+    public func export(
+        _ doc: ComposedDocument,
+        to url: URL,
+        uiLanguageChinese: Bool,
+        sourceURL: URL?
+    ) throws {
+        // XMP 必须在首个 PDF page 开始前加入，因此先做一次不绘制的真实 CoreText 排版，
+        // 得到逻辑原文页实际占用的物理页组；第二次才写入 PDF。
+        let sourceFingerprint = sourceURL.flatMap(PDFPageGroupMetadata.sourceFingerprint(for:))
+        let pageGroupMap = try render(
+            doc,
+            uiLanguageChinese: uiLanguageChinese,
+            sourceFingerprint: sourceFingerprint,
+            context: nil
+        )
         var mediaBox = CGRect(
             x: 0,
             y: 0,
@@ -23,39 +41,94 @@ public struct PDFExporter: Exporter {
         guard let context = CGContext(url as CFURL, mediaBox: &mediaBox, nil) else {
             throw PDFLabError.exportWriteFailed("Unable to create PDF context for \(url.path)")
         }
-
-        let contentWidth = ExportTypography.contentWidth
-        let contentTop = ExportTypography.pageHeight - ExportTypography.margin
-        let contentBottom = ExportTypography.margin
-
-        let state = PageState(context: context, contentTop: contentTop)
-        state.beginPage()
         var completed = false
         defer {
-            state.endPage()
             context.closePDF()
             if !completed {
                 try? FileManager.default.removeItem(at: url)
             }
         }
+        if let pageGroupMap {
+            try PDFPageGroupMetadata.add(pageGroupMap, to: context)
+        }
+        _ = try render(
+            doc,
+            uiLanguageChinese: uiLanguageChinese,
+            sourceFingerprint: sourceFingerprint,
+            context: context
+        )
+        completed = true
+    }
+
+    /// context 为 nil 时只排版计页；非 nil 时用完全相同的路径绘制，保证映射与成品一致。
+    private func render(
+        _ doc: ComposedDocument,
+        uiLanguageChinese: Bool,
+        sourceFingerprint: String?,
+        context: CGContext?
+    ) throws -> PageGroupMap? {
+        let contentWidth = ExportTypography.contentWidth
+        let contentTop = ExportTypography.pageHeight - ExportTypography.margin
+        let contentBottom = ExportTypography.margin
+        let state = PageState(context: context, contentTop: contentTop)
+        state.beginPage()
+        defer { state.endPage() }
         var lastBreakIndex = 0
+        var currentSourcePageIndex: Int?
+        var currentGroupStartPageIndex = 0
+        var pageGroups: [PageGroup] = []
+        var mappingIsValid = true
+
+        func finishCurrentGroup() {
+            guard let sourcePageIndex = currentSourcePageIndex else { return }
+            pageGroups.append(PageGroup(
+                sourcePageIndex: sourcePageIndex,
+                outputStartPageIndex: currentGroupStartPageIndex,
+                outputPageCount: state.physicalPageIndex - currentGroupStartPageIndex + 1
+            ))
+        }
 
         for (index, block) in doc.blocks.enumerated() {
             switch block {
             case .pageBreak(let pageIndex):
                 // 按页对应:按 pageIndex 差值换页,空白源页成为真实空白输出页,
                 // 保持绝对页位(需求 3.6 页对页精确同步)。
+                if let currentSourcePageIndex {
+                    if pageIndex > currentSourcePageIndex {
+                        finishCurrentGroup()
+                    } else {
+                        mappingIsValid = false
+                    }
+                } else if pageIndex > 0 {
+                    // 选定页范围从中途开始时，初始空白物理页代表源第 0 页。
+                    pageGroups.append(PageGroup(
+                        sourcePageIndex: 0,
+                        outputStartPageIndex: state.physicalPageIndex,
+                        outputPageCount: 1
+                    ))
+                }
+
                 var newPages = pageIndex - lastBreakIndex
                 if newPages <= 0, !state.pageIsEmpty {
                     newPages = 1
                 }
-                lastBreakIndex = max(pageIndex, lastBreakIndex)
                 if newPages > 0 {
-                    for _ in 0..<newPages {
+                    for step in 1...newPages {
                         state.endPage()
                         state.beginPage()
+                        let logicalPageIndex = lastBreakIndex + step
+                        if step < newPages {
+                            pageGroups.append(PageGroup(
+                                sourcePageIndex: logicalPageIndex,
+                                outputStartPageIndex: state.physicalPageIndex,
+                                outputPageCount: 1
+                            ))
+                        }
                     }
                 }
+                lastBreakIndex = max(pageIndex, lastBreakIndex)
+                currentSourcePageIndex = pageIndex
+                currentGroupStartPageIndex = state.physicalPageIndex
             case .sourceText(let textBlock):
                 try drawBlock(
                     text: textBlock.text,
@@ -85,30 +158,39 @@ public struct PDFExporter: Exporter {
                 )
             }
         }
-        completed = true
+        finishCurrentGroup()
+        guard mappingIsValid, !pageGroups.isEmpty, let sourceFingerprint else { return nil }
+        return PageGroupMap(
+            sourcePageCount: pageGroups.count,
+            outputPageCount: state.physicalPageIndex + 1,
+            sourceFingerprint: sourceFingerprint,
+            groups: pageGroups
+        )
     }
 
     /// 跟踪当前页排版状态(游标位置、是否为空),用类避免闭包捕获 inout 造成独占访问冲突。
     private final class PageState {
-        let context: CGContext
+        let context: CGContext?
         let contentTop: CGFloat
         var cursorY: CGFloat
         var pageIsEmpty: Bool = true
+        var physicalPageIndex = -1
 
-        init(context: CGContext, contentTop: CGFloat) {
+        init(context: CGContext?, contentTop: CGFloat) {
             self.context = context
             self.contentTop = contentTop
             self.cursorY = contentTop
         }
 
         func beginPage() {
-            context.beginPDFPage(nil)
+            context?.beginPDFPage(nil)
+            physicalPageIndex += 1
             cursorY = contentTop
             pageIsEmpty = true
         }
 
         func endPage() {
-            context.endPDFPage()
+            context?.endPDFPage()
         }
     }
 
@@ -171,7 +253,9 @@ public struct PDFExporter: Exporter {
             case .consume:
                 break
             }
-            CTFrameDraw(ctFrame, state.context)
+            if let context = state.context {
+                CTFrameDraw(ctFrame, context)
+            }
 
             let usedSize = CTFramesetterSuggestFrameSizeWithConstraints(
                 framesetter,

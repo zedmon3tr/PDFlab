@@ -167,7 +167,7 @@ struct ViewerView: View {
             if ViewerToolbarPolicy.showsPageAnchorControl(
                 isSideBySide: isSideBySide,
                 readingLayout: session.readingLayout
-            ) {
+            ), !session.hasActivePageGroupMap {
                 PageAnchorControl(session: session)
             }
         }
@@ -290,14 +290,20 @@ struct ViewerView: View {
         .help(L10n.t("viewer.pageLayout"))
     }
 
-    /// 逐页翻页:◀ 页码/总页 ▶。并排时页码显示由 Task 5 的微调控件承担,这里只出按钮。
+    /// 逐页翻页:映射态显示“原文页 / 译文续页”,普通对照仍由手动锚点显示两侧页码。
     private var pageNavigationControl: some View {
         HStack(spacing: ViewerControlBarMetrics.itemSpacing) {
             controlBarIconButton("chevron.left", labelKey: "viewer.pagePrevious") {
                 session.stepPage(by: -1)
             }
             .disabled(!session.canStepPageBackward)
-            if !isSideBySide, let side = session.currentSingleSide {
+            if isSideBySide, let progress = session.mappedPageProgress {
+                Text("\(L10n.t("viewer.pageGroup.source")) \(progress.sourcePage)/\(progress.sourcePageCount) · \(L10n.t("viewer.pageGroup.translation")) \(progress.translatedPart)/\(progress.translatedPartCount)")
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(minHeight: ViewerControlBarMetrics.controlHeight)
+                    .help(L10n.t("viewer.pageGroup.help"))
+            } else if !isSideBySide, let side = session.currentSingleSide {
                 let state = session.pageState(for: side)
                 Text("\(state.pageIndex + 1) / \(max(state.pageCount, 1))")
                     .font(.callout.monospacedDigit())

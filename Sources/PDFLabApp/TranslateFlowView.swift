@@ -670,6 +670,7 @@ struct TranslateFlowView: View {
                     try Self.performExport(
                         composed,
                         to: outputURL,
+                        sourceURL: sourceURL,
                         format: format,
                         uiLanguageChinese: uiLanguageChinese
                     )
@@ -686,6 +687,7 @@ struct TranslateFlowView: View {
     private nonisolated static func performExport(
         _ document: ComposedDocument,
         to url: URL,
+        sourceURL: URL,
         format: OutputFormat,
         uiLanguageChinese: Bool
     ) throws {
@@ -693,7 +695,12 @@ struct TranslateFlowView: View {
         case .markdown:
             try MarkdownExporter().export(document, to: url, uiLanguageChinese: uiLanguageChinese)
         case .pdf:
-            try PDFExporter().export(document, to: url, uiLanguageChinese: uiLanguageChinese)
+            try PDFExporter().export(
+                document,
+                to: url,
+                uiLanguageChinese: uiLanguageChinese,
+                sourceURL: sourceURL
+            )
         case .docx:
             try DocxExporter().export(document, to: url, uiLanguageChinese: uiLanguageChinese)
         }
